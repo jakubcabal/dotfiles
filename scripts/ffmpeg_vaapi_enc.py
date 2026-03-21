@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Jakub Cabal <jakubcabal@gmail.com>
+# Author: Jakub Cabal <jakubcabal@gmail.com>
 # SPDX-License-Identifier: MIT
 
-"""FFmpeg VAAPI Encoder Script by Jakub Cabal"""
+"""
+ffmpeg_vaapi_enc.py - Video encoder using VAAPI hardware acceleration
+
+Encodes video files using VAAPI (Video Acceleration API) interface,
+enabling hardware encoding on AMD Ryzen CPUs with integrated graphics.
+
+Usage: python ffmpeg_vaapi_enc.py -i input.mkv [-e hevc] [-q 18] [-a aac]
+"""
 
 import argparse
 import json
