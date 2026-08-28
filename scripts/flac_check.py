@@ -1354,10 +1354,13 @@ def convert_file(info: FlacInfo, rate: int, bits: int,
 #                  all: the low byte of every sample is zero.
 #
 # Measured on 189 real files (125x 44.1/16, 38x 48/16, 26x 96/24) against a
-# corpus built from them by ffmpeg. Worst honest file vs. best fake:
+# corpus built from them by ffmpeg, and the ultrasound again later on 34
+# genuine hi-res files (96, 176.4 and 192 kHz) against 9 upsampled ones.
+# Worst honest file vs. best fake:
 #
 #   cliff over 2 bands   honest max 29 dB  |  AAC 128k 49, MP3 128k 61
 #   ultrasound gap       honest max 50 dB  |  upsampled 90-97
+#   ultrasound spread    honest min 39 dB  |  upsampled 1.8-19.5
 #
 # What still gets through: AAC from about 192 kbps up, which no longer cuts
 # the band at all (measured 15 dB - indistinguishable from the original).
@@ -1377,6 +1380,8 @@ LOSSY_FLOOR_DB = -100.0      # below this it is only numerical noise
 ULTRA_FROM = 26000           # the ultrasound is sampled from here,
 ULTRA_STEP = 2000            # coarsely - only its level matters
 ULTRA_GAP_DB = 70.0          # this far below the 15-20 kHz level = silence
+ULTRA_SPAN_DB = 30.0         # but only if it is also featureless: more spread
+                             # than this means something is up there
 ULTRA_EDGE_DB = 20.0         # a band this far above the floor still has content
 ULTRA_MIN_RATE = 48000       # only files claiming more than this are checked
 
@@ -1594,17 +1599,31 @@ def _find_upsampling(result: FakeCheck, fine: list, coarse: list) -> None:
     The level is compared with the file's own 15-20 kHz content rather than
     with a fixed figure, so a quiet or dull recording is judged by the same
     ratio as a bright one.
+
+    Quiet is not enough on its own, though, and the median that measures it is
+    the reason. A 192 kHz file is sampled from 26 kHz to 91 kHz, and a genuine
+    wide recording spends most of that range in its own tail, which drags the
+    median down until it looks like silence - seven of one album here were
+    accused of being upsampled while carrying real content out to 46 kHz. What
+    a resampler actually leaves behind is not just quiet, it is FEATURELESS:
+    arithmetic zero has no shape. So the spread across those bands has to be
+    small too. Measured on 9 upsampled files against 34 genuine hi-res ones:
+    upsampled spans 1.8-19.5 dB (the widest being one dithered on the way),
+    genuine 39-83. Nothing lives in between.
     """
     if not coarse:
         return
     audible = [result.bands[f] for f in fine if 15000 <= f <= 20000]
     if not audible:
         return
-    floor = statistics.median(result.bands[f] for f in coarse)
-    result.ultra_gap_db = statistics.median(audible) - floor
+    levels = [result.bands[f] for f in coarse]
+    result.ultra_gap_db = statistics.median(audible) - statistics.median(levels)
     if result.ultra_gap_db < ULTRA_GAP_DB:
         return
+    if max(levels) - min(levels) > ULTRA_SPAN_DB:
+        return          # structure up there, so something is up there
     # The highest band still carrying anything marks the original Nyquist.
+    floor = statistics.median(levels)
     edge = max((f for f in fine if result.bands[f] > floor + ULTRA_EDGE_DB),
                default=0)
     result.source_rate = next((r for limit, r in UPSAMPLE_HINTS if edge <= limit),
