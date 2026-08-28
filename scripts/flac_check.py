@@ -49,6 +49,13 @@ None of this is repairable, which is why it is a command of its own and not
 part of the analyze/reencode/repair chain. See the FakeCheck section for the
 thresholds and the measurements they came from.
 
+MD5 IN THE HEADER
+STREAMINFO carries an MD5 of the decoded audio, and that is what makes a FLAC
+verifiable at all: `flac -t` compares it, and so does this script after every
+write. Some encoders leave it at zero, and then nothing can ever prove the
+audio survived - `flac -t` only says "cannot check MD5 signature" and exits 0
+regardless. Such files are listed, and re-encoding one writes a proper MD5.
+
 FLAC SUBSET
 The subset is what hardware players restrict themselves to. A file outside it
 is still valid FLAC, but a set-top box or car radio may refuse it. The limits
@@ -228,6 +235,7 @@ dmg_encoder_bug      | → enkodér: {vendor}                                   
 dmg_harmless_header  | 🔧 VADNÁ HLAVIČKA ({count}) - enkodér zahodil poslední neúplný rámec,\n   ale do hlavičky zapsal plný počet vzorků. Zvuk je celý, chybu\n   hlásí jen `flac -t`. | 🔧 BAD HEADER ({count}) - the encoder dropped the last partial frame\n   but wrote the full sample count into the header. No audio is\n   missing, only `flac -t` complains.
 dmg_unknown_position | (přesnou pozici se nepodařilo určit)                       | (the exact position could not be determined)
 unreadable_header    | Nepodařilo se přečíst:                                     | Could not be read:
+nomd5_header         | 🔓 BEZ MD5 V HLAVIČCE ({count}) - zvuk proti ní nelze ověřit, překódování\n   MD5 doplní: | 🔓 NO MD5 IN THE HEADER ({count}) - the audio cannot be verified against\n   it, re-encoding writes one:
 
 # --- repair -----------------------------------------------------------
 fix_nothing       | Report nehlásí žádný poškozený soubor.                     | The report lists no damaged files.
@@ -308,6 +316,7 @@ sum_total       | FLAC souborů celkem           | FLAC files in total
 sum_damaged     | POŠKOZENÉ                     | DAMAGED
 sum_harmless    | Vadná hlavička (zvuk je celý) | Bad header (audio is complete)
 sum_unreadable  | Nečitelná hlavička            | Unreadable header
+sum_no_md5      | Bez MD5 v hlavičce            | No MD5 in the header
 sum_subset_fix  | Mimo subset (opravitelné)     | Outside subset (fixable)
 sum_subset_keep | Mimo subset (neopravitelné)   | Outside subset (not fixable)
 sum_fake        | Nesedí deklarovaná kvalita    | Quality is not what it claims
@@ -334,6 +343,7 @@ adv_subset_keep | {count} mimo subset nelze opravit beze ztráty, viz výš.    
 adv_reanalyze   | Report je aktualizovaný; pro plný obraz spusť analyze znovu. | The report is updated; run analyze again for the full picture.
 adv_stale       | {cmd}  ({count} z reportu chybí na disku)                   | {cmd}  ({count} of the report are no longer on disk)
 adv_partial     | {cmd}  ({count} zatím bez hloubkové analýzy)                | {cmd}  ({count} not deeply analysed yet)
+adv_no_md5      | {cmd}  ({count} bez MD5, překódování ho doplní)             | {cmd}  ({count} without an MD5, re-encoding writes one)
 
 # --- files that lie about their quality --------------------------------
 fake_unusable  | stopa je příliš krátká nebo tichá                          | the track is too short or too quiet
@@ -1843,6 +1853,16 @@ class Analysis:
         return bool(self.info.error) and not self.info.damaged
 
     @property
+    def no_md5(self) -> bool:
+        """Header without the MD5 of the audio, so nothing can ever verify it.
+
+        Not a defect of the audio and not worth a severity - the file plays
+        and decodes - but it is the one property that cannot be found out
+        later, and re-encoding quietly fixes it.
+        """
+        return self.info.md5 == MD5_UNSET
+
+    @property
     def needs_attention(self) -> bool:
         """Worth printing without --all."""
         return bool(self.weak or self.subset_fixable or self.subset_inherent
@@ -2403,6 +2423,10 @@ def print_findings(report: Report, show_all: bool) -> None:
                     [(f"{rel(a.info.path, root)}: {a.info.error}", [])
                      for a in found])
 
+    if found := by_name([a for a in report.items if a.no_md5]):
+        print_group(t("nomd5_header", count=files(len(found))),
+                    [(rel(a.info.path, root), []) for a in found])
+
     if found := [a for a in report.items if a.fake and a.fake.suspicious]:
         print_fakes([a.fake for a in found], root)
 
@@ -2655,6 +2679,7 @@ def summary_rows(report: Report) -> list:
         (("sum_damaged", count(lambda a: a.really_damaged)),
          ("sum_harmless", count(lambda a: a.harmless)),
          ("sum_unreadable", count(lambda a: a.unreadable)),
+         ("sum_no_md5", count(lambda a: a.no_md5)),
          ("sum_subset_fix", count(lambda a: a.subset_fixable)),
          ("sum_subset_keep", count(lambda a: a.subset_inherent)),
          ("sum_fake", count(lambda a: a.fake and a.fake.suspicious))))
@@ -2692,6 +2717,12 @@ def report_advice(report: Report, args) -> list:
     if shallow := [a for a in report.items if a.partial and not a.info.error]:
         advice.append(t("adv_partial", cmd=command_hint("analyze", root),
                         count=files(len(shallow))))
+    # Only --all reaches a file that is otherwise fine, which most of these
+    # are - so the hint has to carry the flag with it.
+    if no_md5 := [a for a in report.items if a.no_md5]:
+        advice.append(t("adv_no_md5",
+                        cmd=command_hint("reencode", root, " --all"),
+                        count=files(len(no_md5))))
     if inherent:
         advice.append(t("adv_subset_keep", count=files(len(inherent))))
     if lying:
@@ -2710,7 +2741,7 @@ def has_findings(report: Report) -> bool:
     would be a verdict on a file nobody has looked at.
     """
     return any(a.weak or a.subset_fixable or a.subset_inherent or a.info.error
-               or a.partial or (a.fake and a.fake.suspicious)
+               or a.partial or a.no_md5 or (a.fake and a.fake.suspicious)
                for a in report.items)
 
 
