@@ -505,13 +505,20 @@ ORIG_SUFFIX = ".orig.flac"
 def resample_filter(bits: int) -> str:
     """The ffmpeg filter that does the resampling and the requantising.
 
-    soxr at 28 bit precision is the best resampler ffmpeg has. `osf` is what
-    turns the dithering on, so it is set to the target depth - but only 16 bit
-    needs it: for 24 and 32 the internal s32 is simply cut down to the raw
-    format, and an error at bit 25 sits below -144 dBFS.
+    soxr at 28 bit precision is the best resampler ffmpeg has. Dither is asked
+    for at 16 bit and nowhere else, for two independent reasons. It is the
+    only depth where it can be heard - at 24 and 32 the quantisation error
+    sits below -144 dBFS - and, more to the point, the only depth where
+    ffmpeg gets it right: noise shaping with a packed 32 bit output, which is
+    what `osf` has to be for 24 and 32, silently returns a full scale, clipped
+    mess. Measured here on a -24 dBFS tone: it came back at 0 dBFS with a
+    quarter of its samples pinned to the rail. So above 16 bit the samples are
+    only cut down to the raw format, with no dither_method anywhere near them.
     """
-    return ("aresample=resampler=soxr:precision=28"
-            f":osf={'s16' if bits == 16 else 's32'}:dither_method=shibata")
+    if bits == 16:
+        return ("aresample=resampler=soxr:precision=28"
+                ":osf=s16:dither_method=shibata")
+    return "aresample=resampler=soxr:precision=28:osf=s32"
 
 
 def converting(args) -> bool:
