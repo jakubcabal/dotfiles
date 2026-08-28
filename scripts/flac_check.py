@@ -103,9 +103,6 @@ confirmation says which of the two is about to happen. An original already put
 aside is never overwritten, so a second run cannot bury the real one; when the
 new files have proved themselves, `drop-originals` clears them out.
 
-Whether to rewrite a file is decided PER FILE, never from a folder average,
-see meets_threshold().
-
 Requires Python 3.8+ and the `flac` tool 1.3+ in PATH (1.4+ for 32 bit
 output). Converting with --sample-rate/--bits also needs `ffmpeg` built with
 libsoxr. No PyPI packages.
@@ -169,11 +166,11 @@ def _messages(table: str) -> dict:
 
 MESSAGES = _messages(r"""
 # --- dependencies -----------------------------------------------------
-dep_python_old     | Python {have} je starý, potřeba {want}+          | Python {have} is too old, need {want}+
-dep_flac_missing   | nástroj 'flac' není v PATH                       | the 'flac' tool is not in PATH
-dep_flac_old       | flac {have} je starý, potřeba {want}+            | flac {have} is too old, need {want}+
-dep_ffmpeg_missing | nástroj 'ffmpeg' není v PATH (nutný pro převod)  | the 'ffmpeg' tool is not in PATH (needed for the conversion)
-dep_ffmpeg_soxr    | ffmpeg neumí resampler soxr (chybí libsoxr)      | this ffmpeg has no soxr resampler (built without libsoxr)
+dep_python_old     | Python {have} je starý, potřeba {want}+         | Python {have} is too old, need {want}+
+dep_flac_missing   | nástroj 'flac' není v PATH                      | the 'flac' tool is not in PATH
+dep_flac_old       | flac {have} je starý, potřeba {want}+           | flac {have} is too old, need {want}+
+dep_ffmpeg_missing | nástroj 'ffmpeg' není v PATH (nutný pro převod) | the 'ffmpeg' tool is not in PATH (needed for the conversion)
+dep_ffmpeg_soxr    | ffmpeg neumí resampler soxr (chybí libsoxr)     | this ffmpeg has no soxr resampler (built without libsoxr)
 
 # --- read and encode errors -------------------------------------------
 err_eof              | neočekávaný konec souboru v metadatech   | unexpected end of file in the metadata
@@ -205,12 +202,12 @@ sev_warn | Slabší komprese              | Weaker compression
 sev_bad  | Velmi slabá komprese (-0/-2) | Very weak compression (-0/-2)
 
 # --- why a file was flagged -------------------------------------------
-why_blocksize_low | blok {size} při {rate} Hz (nízké úrovně mají {expected})   | block size {size} at {rate} Hz (low levels use {expected})
-why_blocksize_odd | nestandardní blok {size} při {rate} Hz                     | unusual block size {size} at {rate} Hz
-why_no_lpc        | žádná LPC predikce (enkodér běžel s -l 0)                  | no LPC prediction at all (encoder ran with -l 0)
-why_low_lpc       | jen {pct:.0f} % subrámců používá LPC                       | only {pct:.0f} % of subframes use LPC
+why_blocksize_low | blok {size} při {rate} Hz (nízké úrovně mají {expected})         | block size {size} at {rate} Hz (low levels use {expected})
+why_blocksize_odd | nestandardní blok {size} při {rate} Hz                           | unusual block size {size} at {rate} Hz
+why_no_lpc        | žádná LPC predikce (enkodér běžel s -l 0)                        | no LPC prediction at all (encoder ran with -l 0)
+why_low_lpc       | jen {pct:.0f} % subrámců používá LPC                             | only {pct:.0f} % of subframes use LPC
 why_low_order     | nejvyšší LPC řád jen {order} (odpovídá -3, ale závisí na obsahu) | highest LPC order is only {order} (suggests -3, but depends on the material)
-why_no_stereo     | žádná stereo dekorelace (-0 nebo -3)                       | no stereo decorrelation (-0 or -3)
+why_no_stereo     | žádná stereo dekorelace (-0 nebo -3)                             | no stereo decorrelation (-0 or -3)
 
 # --- FLAC subset ------------------------------------------------------
 sub_blocksize | blok {size} > {limit} (limit pro {rate} Hz)                | block size {size} > {limit} (limit at {rate} Hz)
@@ -232,25 +229,25 @@ rep_encoder     | enkodér {vendor}                                     | encode
 rep_partial     | (po přepsání, bez hloubkové analýzy - spusť analyze) | (rewritten, no deep analysis yet - run analyze)
 
 # --- damaged files ----------------------------------------------------
-dmg_header           | 💥 POŠKOZENÉ SOUBORY ({count}) - dekodér na nich selhal:    | 💥 DAMAGED FILES ({count}) - the decoder failed on them:
-dmg_locating         | Zjišťuji rozsah poškození ({count})                        | Locating the damage ({count})
-dmg_at_start         | {time} = {pct:.1f} % stopy, na začátku                     | {time} = {pct:.1f} % in, near the start
-dmg_at_end           | {time} = {pct:.1f} % stopy, na konci                       | {time} = {pct:.1f} % in, near the end
-dmg_at_middle        | {time} = {pct:.1f} % stopy, uprostřed                      | {time} = {pct:.1f} % in, in the middle
-dmg_error_at         | ✗ chyba v datech na {where}                                | ✗ data error at {where}
-dmg_truncated        | ✂ useknuto na {where} - chybí {samples} vzorků ({seconds:.2f} s) | ✂ truncated at {where} - {samples} samples missing ({seconds:.2f} s)
-dmg_encoder_bug      | → enkodér: {vendor}                                        | → encoder: {vendor}
+dmg_header           | 💥 POŠKOZENÉ SOUBORY ({count}) - dekodér na nich selhal:                                                                                                         | 💥 DAMAGED FILES ({count}) - the decoder failed on them:
+dmg_locating         | Zjišťuji rozsah poškození ({count})                                                                                                                             | Locating the damage ({count})
+dmg_at_start         | {time} = {pct:.1f} % stopy, na začátku                                                                                                                          | {time} = {pct:.1f} % in, near the start
+dmg_at_end           | {time} = {pct:.1f} % stopy, na konci                                                                                                                            | {time} = {pct:.1f} % in, near the end
+dmg_at_middle        | {time} = {pct:.1f} % stopy, uprostřed                                                                                                                           | {time} = {pct:.1f} % in, in the middle
+dmg_error_at         | ✗ chyba v datech na {where}                                                                                                                                     | ✗ data error at {where}
+dmg_truncated        | ✂ useknuto na {where} - chybí {samples} vzorků ({seconds:.2f} s)                                                                                                | ✂ truncated at {where} - {samples} samples missing ({seconds:.2f} s)
+dmg_encoder_bug      | → enkodér: {vendor}                                                                                                                                             | → encoder: {vendor}
 dmg_harmless_header  | 🔧 VADNÁ HLAVIČKA ({count}) - enkodér zahodil poslední neúplný rámec,\n   ale do hlavičky zapsal plný počet vzorků. Zvuk je celý, chybu\n   hlásí jen `flac -t`. | 🔧 BAD HEADER ({count}) - the encoder dropped the last partial frame\n   but wrote the full sample count into the header. No audio is\n   missing, only `flac -t` complains.
-dmg_unknown_position | (přesnou pozici se nepodařilo určit)                       | (the exact position could not be determined)
-unreadable_header    | Nepodařilo se přečíst:                                     | Could not be read:
-nomd5_header         | 🔓 BEZ MD5 V HLAVIČCE ({count}) - zvuk proti ní nelze ověřit, překódování\n   MD5 doplní: | 🔓 NO MD5 IN THE HEADER ({count}) - the audio cannot be verified against\n   it, re-encoding writes one:
+dmg_unknown_position | (přesnou pozici se nepodařilo určit)                                                                                                                            | (the exact position could not be determined)
+unreadable_header    | Nepodařilo se přečíst:                                                                                                                                          | Could not be read:
+nomd5_header         | 🔓 BEZ MD5 V HLAVIČCE ({count}) - zvuk proti ní nelze ověřit, překódování\n   MD5 doplní:                                                                        | 🔓 NO MD5 IN THE HEADER ({count}) - the audio cannot be verified against\n   it, re-encoding writes one:
 
 # --- repair -----------------------------------------------------------
 fix_nothing       | Report nehlásí žádný poškozený soubor.                     | The report lists no damaged files.
 fix_confirm       | Chystám se opravit {count}:                                | About to repair {count}:
 fix_intro_subset  | {count} mimo subset - překóduji na místě, ověřím proti MD5 | {count} outside the subset - re-encoded in place, MD5 verified
 fix_intro_header  | {count} s vadnou hlavičkou - opravím jen ji, zvuk zůstane  | {count} with a bad header - only it is corrected, audio stays
-fix_intro_salvage | {count} s poškozeným zvukem - zachráním, co půjde přečíst    | {count} damaged - whatever is readable is salvaged
+fix_intro_salvage | {count} s poškozeným zvukem - zachráním, co půjde přečíst  | {count} damaged - whatever is readable is salvaged
 fix_header_done   | hlavička opravena, {old} → {new} vzorků, zvuk nezměněn     | header corrected, {old} → {new} samples, audio untouched
 fix_running       | Zachraňuji ({count})                                       | Salvaging ({count})
 fix_recovered     | zachráněno {pct:.2f} %{lost}                               | recovered {pct:.2f} %{lost}
@@ -265,60 +262,59 @@ fix_failed        | záchrana selhala: {error}                                  
 fix_no_meta       | tagy se přenést nepodařilo                                 | tags could not be carried over
 
 # --- reencode ---------------------------------------------------------
-rc_nothing      | Report nehlásí nic k překódování.                          | The report lists nothing to re-encode.
-rc_confirm      | Chystám se PŘEPSAT {count} na místě ({total}).             | About to OVERWRITE {count} in place ({total}).
-rc_all_scope    | všechny soubory z reportu, přepíší se jen ty s úsporou aspoň {min:g} % | every file in the report, but only those saving at least {min:g} % get rewritten
-rc_all_any      | všechny soubory z reportu, přepíší se všechny bez ohledu na úsporu | every file in the report, all of them rewritten whatever the saving
-rc_all_skipped  | {count} s vadou vynecháno, na ty je repair                 | {count} with a defect left out, repair is the command for those
-rc_all_new      | {count} přibylo od poslední analýzy                        | {count} appeared since the last analyze
-rc_conv_to      | převod na {format}, přepočítá soxr s ditherem shibata      | conversion to {format}, recomputed by soxr with shibata dither
-rc_conv_num     | {count} se převede, zbytek se jen překóduje                | {count} will be converted, the rest are only re-encoded
-rc_conv_warn    | Zvuk se PŘEPOČÍTÁ, není to bezeztrátové.                   | The audio is RECOMPUTED, this is not lossless.
+rc_nothing      | Report nehlásí nic k překódování.                                    | The report lists nothing to re-encode.
+rc_confirm      | Chystám se PŘEPSAT {count} na místě ({total}).                       | About to OVERWRITE {count} in place ({total}).
+rc_all_any      | všechny soubory z reportu, přepíší se všechny bez ohledu na úsporu   | every file in the report, all of them rewritten whatever the saving
+rc_all_skipped  | {count} s vadou vynecháno, na ty je repair                           | {count} with a defect left out, repair is the command for those
+rc_all_new      | {count} přibylo od poslední analýzy                                  | {count} appeared since the last analyze
+rc_conv_to      | převod na {format}, přepočítá soxr                                   | conversion to {format}, recomputed by soxr
+rc_conv_dither  | při 16 bitech se navíc přidá dither (shibata)                        | at 16 bit a dither is added on top (shibata)
+rc_conv_num     | {count} se převede, zbytek se jen překóduje                          | {count} will be converted, the rest are only re-encoded
+rc_conv_warn    | Zvuk se PŘEPOČÍTÁ, není to bezeztrátové.                             | The audio is RECOMPUTED, this is not lossless.
 rc_conv_meta    | Tagy i obal zůstanou, cuesheet ne: odkazuje na vzorky, a ty se mění. | Tags and cover art are kept, the cuesheet is not: it indexes samples, and those change.
-rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})              | {oldfmt} → {newfmt}, {old} → {new} ({change})
-rc_conv_would   | převedl by se na {newfmt} ({change}), soubor nezměněn      | would be converted to {newfmt} ({change}), file unchanged
-rc_conv_rate    | {khz:g} kHz (hloubka beze změny)                           | {khz:g} kHz (depth left as it is)
-rc_conv_bits    | {bits} bit (frekvence beze změny)                          | {bits} bit (rate left as it is)
-rc_conv_bad     | {rate} Hz se do FLACu nezapíše, zvol běžnou frekvenci      | FLAC cannot store {rate} Hz, pick a common rate
-rc_settings     | nastavení: flac {opts}                                     | settings: flac {opts}
-rc_promise      | Zvuk zůstane bit po bitu stejný (ověřuje se MD5), tagy a obal také. | The audio stays bit-for-bit identical (MD5 checked), so do tags and cover art.
-rc_not_tty      | Vstup není terminál - pro neinteraktivní běh použij --yes. | Input is not a terminal - use --yes for non-interactive runs.
-rc_prompt       | Pokračovat? [ano/Ne]:                                      | Continue? [yes/No]:
-rc_cancelled    | Zrušeno, nic se nezměnilo.                                 | Cancelled, nothing changed.
-rc_running      | Překódovávám ({count})                                     | Re-encoding ({count})
-rc_running_dry  | Zkouším nanečisto ({count})                                | Dry run over ({count})
-rc_replaced     | {old} → {new} (ušetřeno {saved}, {pct:.1f} %)              | {old} → {new} (saved {saved}, {pct:.1f} %)
-rc_would        | ušetřilo by se {saved} ({pct:.1f} %), soubor nezměněn      | would save {saved} ({pct:.1f} %), file unchanged
-rc_nogain_done  | {old} → {new} (nic se neušetřilo, +{pct:.2f} %)            | {old} → {new} (nothing saved, +{pct:.2f} %)
-rc_nogain_dry   | neušetřilo by se nic (+{pct:.2f} %), přepsal by se přesto  | nothing would be saved (+{pct:.2f} %), it would be rewritten anyway
-rc_would_subset | vrátil by se do subsetu ({change}), soubor nezměněn        | would return into the subset ({change}), file unchanged
-rc_skipped      | úspora pod {min:g} % ({saved}), originál ponechán          | saving below {min:g} % ({saved}), original kept
-rc_subset_done  | v subsetu, {old} → {new} ({change})                        | now in subset, {old} → {new} ({change})
-rc_grew         | naroste o {pct:.2f} %                                      | grows by {pct:.2f} %
-rc_saved_pct    | ušetřeno {pct:.2f} %                                       | saved {pct:.2f} %
-rc_failed       | {error} - originál ponechán                                | {error} - original kept
+rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})                        | {oldfmt} → {newfmt}, {old} → {new} ({change})
+rc_conv_would   | převedl by se na {newfmt} ({change}), soubor nezměněn                | would be converted to {newfmt} ({change}), file unchanged
+rc_conv_rate    | {khz:g} kHz (hloubka beze změny)                                     | {khz:g} kHz (depth left as it is)
+rc_conv_bits    | {bits} bit (frekvence beze změny)                                    | {bits} bit (rate left as it is)
+rc_conv_bad     | {rate} Hz se do FLACu nezapíše, zvol běžnou frekvenci                | FLAC cannot store {rate} Hz, pick a common rate
+rc_settings     | nastavení: flac {opts}                                               | settings: flac {opts}
+rc_promise      | Zvuk zůstane bit po bitu stejný (ověřuje se MD5), tagy a obal také.  | The audio stays bit-for-bit identical (MD5 checked), so do tags and cover art.
+rc_not_tty      | Vstup není terminál - pro neinteraktivní běh použij --yes.           | Input is not a terminal - use --yes for non-interactive runs.
+rc_prompt       | Pokračovat? [ano/Ne]:                                                | Continue? [yes/No]:
+rc_cancelled    | Zrušeno, nic se nezměnilo.                                           | Cancelled, nothing changed.
+rc_running      | Překódovávám ({count})                                               | Re-encoding ({count})
+rc_running_dry  | Zkouším nanečisto ({count})                                          | Dry run over ({count})
+rc_replaced     | {old} → {new} (ušetřeno {saved}, {pct:.1f} %)                        | {old} → {new} (saved {saved}, {pct:.1f} %)
+rc_would        | ušetřilo by se {saved} ({pct:.1f} %), soubor nezměněn                | would save {saved} ({pct:.1f} %), file unchanged
+rc_nogain_done  | {old} → {new} (nic se neušetřilo, +{pct:.2f} %)                      | {old} → {new} (nothing saved, +{pct:.2f} %)
+rc_nogain_dry   | neušetřilo by se nic (+{pct:.2f} %), přepsal by se přesto            | nothing would be saved (+{pct:.2f} %), it would be rewritten anyway
+rc_would_subset | vrátil by se do subsetu ({change}), soubor nezměněn                  | would return into the subset ({change}), file unchanged
+rc_subset_done  | v subsetu, {old} → {new} ({change})                                  | now in subset, {old} → {new} ({change})
+rc_grew         | naroste o {pct:.2f} %                                                | grows by {pct:.2f} %
+rc_saved_pct    | ušetřeno {pct:.2f} %                                                 | saved {pct:.2f} %
+rc_failed       | {error} - originál ponechán                                          | {error} - original kept
 
 # --- report file ------------------------------------------------------
-rp_saved       | Report uložen: {path}                                      | Report saved: {path}
-rp_missing     | Report pro '{root}' neexistuje - spusť nejdřív:\n  {cmd}   | No report for '{root}' - run this first:\n  {cmd}
-rp_broken      | Report {path} nejde přečíst ({error}), spusť analyze znovu. | Report {path} cannot be read ({error}), run analyze again.
-rp_from        | Report z {when} ({count})                                  | Report from {when} ({count})
-rp_stale_file  | {name}: od analýzy se změnil, přeskakuji                   | {name}: changed since the analysis, skipping
-rp_gone_file   | {name}: už neexistuje, přeskakuji                          | {name}: no longer exists, skipping
+rp_saved       | Report uložen: {path}                                          | Report saved: {path}
+rp_missing     | Report pro '{root}' neexistuje - spusť nejdřív:\n  {cmd}       | No report for '{root}' - run this first:\n  {cmd}
+rp_broken      | Report {path} nejde přečíst ({error}), spusť analyze znovu.    | Report {path} cannot be read ({error}), run analyze again.
+rp_from        | Report z {when} ({count})                                      | Report from {when} ({count})
+rp_stale_file  | {name}: od analýzy se změnil, přeskakuji                       | {name}: changed since the analysis, skipping
+rp_gone_file   | {name}: už neexistuje, přeskakuji                              | {name}: no longer exists, skipping
 rp_stale_count | Přeskočeno {count} (změněno od analýzy) - spusť analyze znovu. | Skipped {count} (changed since the analysis) - run analyze again.
-rp_reused      | beze změny od minule: {count}, znovu analyzuji {fresh}     | unchanged since last time: {count}, re-analysing {fresh}
+rp_reused      | beze změny od minule: {count}, znovu analyzuji {fresh}         | unchanged since last time: {count}, re-analysing {fresh}
 
 # --- dropping the originals put aside ---------------------------------
-drop_none      | Žádné odložené originály (*{suffix}) tu nejsou.             | There are no originals put aside (*{suffix}) here.
-drop_confirm   | Chystám se SMAZAT {count} ({total}).                        | About to DELETE {count} ({total}).
-drop_what      | odložené originály *{suffix}, jejichž náhrada je na místě   | originals put aside as *{suffix}, whose replacement is in place
-drop_final     | Zpátky už se z nich nic nevezme.                            | Nothing can be taken back from them afterwards.
-drop_orphan    | Bez náhrady, proto ponecháno ({count}) - je to poslední kopie toho zvuku: | Kept because nothing replaced them ({count}) - they are the last copy of that audio:
-drop_failed    | {name}: {error}                                             | {name}: {error}
-drop_failed_h  | Nepodařilo se smazat ({count}):                             | Could not be deleted ({count}):
-drop_done      | Smazáno                                                     | Deleted
-drop_would     | Smazalo by se                                               | Would be deleted
-drop_freed     | Uvolněno                                                    | Freed
+drop_none     | Žádné odložené originály (*{suffix}) tu nejsou.                           | There are no originals put aside (*{suffix}) here.
+drop_confirm  | Chystám se SMAZAT {count} ({total}).                                      | About to DELETE {count} ({total}).
+drop_what     | odložené originály *{suffix}, jejichž náhrada je na místě                 | originals put aside as *{suffix}, whose replacement is in place
+drop_final    | Zpátky už se z nich nic nevezme.                                          | Nothing can be taken back from them afterwards.
+drop_orphan   | Bez náhrady, proto ponecháno ({count}) - je to poslední kopie toho zvuku: | Kept because nothing replaced them ({count}) - they are the last copy of that audio:
+drop_failed   | {name}: {error}                                                           | {name}: {error}
+drop_failed_h | Nepodařilo se smazat ({count}):                                           | Could not be deleted ({count}):
+drop_done     | Smazáno                                                                   | Deleted
+drop_would    | Smazalo by se                                                             | Would be deleted
+drop_freed    | Uvolněno                                                                  | Freed
 
 # --- progress and run -------------------------------------------------
 run_scanning    | Prohledávám {root}          | Scanning {root}
@@ -344,65 +340,63 @@ sum_grew        | Narostlo o                    | Grew by
 sum_done        | Překódováno                   | Re-encoded
 sum_converted   | Převedeno                     | Converted
 sum_saved       | Ušetřeno                      | Saved
-sum_skipped     | Přeskočeno                    | Skipped
 sum_failed      | Selhalo (originál zachován)   | Failed (original kept)
 sum_repaired    | Zachráněno                    | Salvaged
 sum_subset_done | Vráceno do subsetu            | Returned into the subset
 sum_header_done | Opravena hlavička             | Header corrected
 
 # --- next step --------------------------------------------------------
-adv_next        | Další krok:                                                | Next step:
-adv_reencode    | {cmd}  ({count}, ušetří místo, {eta})                      | {cmd}  ({count}, saves space, {eta})
-adv_repair      | {cmd}  ({count} s vadou)                                   | {cmd}  ({count} with a defect)
-adv_findfake    | {cmd}  (jestli soubory nelžou o kvalitě, {eta})            | {cmd}  (whether the files lie about their quality, {eta})
-adv_clean       | Vše v pořádku, nic k opravě.                               | All clear, nothing to fix.
+adv_next        | Další krok:                                                                           | Next step:
+adv_reencode    | {cmd}  ({count}, ušetří místo, {eta})                                                 | {cmd}  ({count}, saves space, {eta})
+adv_repair      | {cmd}  ({count} s vadou)                                                              | {cmd}  ({count} with a defect)
+adv_findfake    | {cmd}  (jestli soubory nelžou o kvalitě, {eta})                                       | {cmd}  (whether the files lie about their quality, {eta})
+adv_clean       | Vše v pořádku, nic k opravě.                                                          | All clear, nothing to fix.
 adv_fake        | {count} má horší kvalitu, než tvrdí; překódování nepomůže, jen lepší kopie ze zdroje. | {count} are worse than they claim; re-encoding will not help, only a better copy from the source.
-adv_was_dry     | Bylo to nanečisto. Spusť totéž bez --dry-run.              | That was a dry run. Repeat it without --dry-run.
-adv_failed      | U selhaných zůstaly originály; zkontroluj práva a volné místo. | Originals of the failed files are untouched; check permissions and free space.
-adv_subset_keep | {count} mimo subset nelze opravit beze ztráty, viz výš.    | {count} outside the subset cannot be fixed losslessly, see above.
-adv_reanalyze   | Report je aktualizovaný; pro plný obraz spusť analyze znovu. | The report is updated; run analyze again for the full picture.
-adv_stale       | {cmd}  ({count} z reportu chybí na disku)                   | {cmd}  ({count} of the report are no longer on disk)
-adv_partial     | {cmd}  ({count} zatím bez hloubkové analýzy)                | {cmd}  ({count} not deeply analysed yet)
-adv_no_md5      | {cmd}  ({count} bez MD5, překódování ho doplní)             | {cmd}  ({count} without an MD5, re-encoding writes one)
+adv_was_dry     | Bylo to nanečisto. Spusť totéž bez --dry-run.                                         | That was a dry run. Repeat it without --dry-run.
+adv_failed      | U selhaných zůstaly originály; zkontroluj práva a volné místo.                        | Originals of the failed files are untouched; check permissions and free space.
+adv_subset_keep | {count} mimo subset nelze opravit beze ztráty, viz výš.                               | {count} outside the subset cannot be fixed losslessly, see above.
+adv_reanalyze   | Report je aktualizovaný; pro plný obraz spusť analyze znovu.                          | The report is updated; run analyze again for the full picture.
+adv_stale       | {cmd}  ({count} z reportu chybí na disku)                                             | {cmd}  ({count} of the report are no longer on disk)
+adv_partial     | {cmd}  ({count} zatím bez hloubkové analýzy)                                          | {cmd}  ({count} not deeply analysed yet)
+adv_no_md5      | {cmd}  ({count} bez MD5, překódování ho doplní)                                       | {cmd}  ({count} without an MD5, re-encoding writes one)
 
 # --- files that lie about their quality --------------------------------
-fake_unusable  | stopa je příliš krátká nebo tichá                          | the track is too short or too quiet
-fake_running   | Ověřuji deklarovanou kvalitu ({count})                     | Verifying the declared quality ({count})
-fake_header    | 🎭 KVALITA NEODPOVÍDÁ DEKLARACI ({count}):                  | 🎭 QUALITY IS NOT WHAT IS CLAIMED ({count}):
-fake_lossy     | ztrátový zdroj: ostrý ořez na {khz:.1f} kHz, sráz {db:.0f} dB - odpovídá {hint} | lossy source: sharp cutoff at {khz:.1f} kHz, {db:.0f} dB cliff - consistent with {hint}
+fake_unusable  | stopa je příliš krátká nebo tichá                                                                                | the track is too short or too quiet
+fake_running   | Ověřuji deklarovanou kvalitu ({count})                                                                           | Verifying the declared quality ({count})
+fake_header    | 🎭 KVALITA NEODPOVÍDÁ DEKLARACI ({count}):                                                                        | 🎭 QUALITY IS NOT WHAT IS CLAIMED ({count}):
+fake_lossy     | ztrátový zdroj: ostrý ořez na {khz:.1f} kHz, sráz {db:.0f} dB - odpovídá {hint}                                  | lossy source: sharp cutoff at {khz:.1f} kHz, {db:.0f} dB cliff - consistent with {hint}
 fake_upsampled | falešné hi-res: {claimed} kHz převzorkováno z {source} kHz, nad {edge:.1f} kHz je ticho ({db:.0f} dB pod hudbou) | fake hi-res: {claimed} kHz upsampled from {source} kHz, silence above {edge:.1f} kHz ({db:.0f} dB below the music)
-fake_padded    | falešná hloubka: hlavička říká {claimed} bitů, vzorky využívají {real} | padded depth: the header says {claimed} bits, the samples use {real}
-fake_caveat    | Ořez může mít i nahrávka z analogového pásu; ověř spektrogramem. AAC nad ~192 kbps se takhle chytit nedá. | An analogue tape source can be cut off too; check a spectrogram. AAC above ~192 kbps cannot be caught this way.
-fake_none      | Žádný soubor nelže o své kvalitě.                          | No file lies about its quality.
-fake_ok_header | ✅ Kvalita odpovídá deklaraci ({count}):                    | ✅ Quality matches the claim ({count}):
-fake_ok_cutoff | bez ořezu spektra                                          | no cutoff in the spectrum
-fake_ok_ultra  | ultrazvuk jen {db:.0f} dB pod hudbou                       | ultrasound only {db:.0f} dB below the music
-fake_ok_bits   | vzorky využívají všech {bits} bitů                         | the samples use all {bits} bits
-fake_skipped   | Nešlo změřit ({count}): {reason}                           | Could not be measured ({count}): {reason}
+fake_padded    | falešná hloubka: hlavička říká {claimed} bitů, vzorky využívají {real}                                           | padded depth: the header says {claimed} bits, the samples use {real}
+fake_caveat    | Ořez může mít i nahrávka z analogového pásu; ověř spektrogramem. AAC nad ~192 kbps se takhle chytit nedá.        | An analogue tape source can be cut off too; check a spectrogram. AAC above ~192 kbps cannot be caught this way.
+fake_none      | Žádný soubor nelže o své kvalitě.                                                                                | No file lies about its quality.
+fake_ok_header | ✅ Kvalita odpovídá deklaraci ({count}):                                                                          | ✅ Quality matches the claim ({count}):
+fake_ok_cutoff | bez ořezu spektra                                                                                                | no cutoff in the spectrum
+fake_ok_ultra  | ultrazvuk jen {db:.0f} dB pod hudbou                                                                             | ultrasound only {db:.0f} dB below the music
+fake_ok_bits   | vzorky využívají všech {bits} bitů                                                                               | the samples use all {bits} bits
+fake_skipped   | Nešlo změřit ({count}): {reason}                                                                                 | Could not be measured ({count}): {reason}
 
 # --- command line help ------------------------------------------------
-cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.       | Checks a FLAC library: compression, subset, damage.
-cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.    | Run analyze first, then reencode or repair as needed.
-cli_command      | příkaz                                                     | command
-cli_folder       | složka s hudbou (rekurzivně)                               | music folder (recursive)
-cli_jobs         | paralelních procesů (výchozí: počet jader)                 | parallel jobs (default: CPU count)
-cli_lang         | jazyk výstupu (výchozí: podle prostředí)                   | output language (default: from the environment)
-cli_report       | kam uložit report (výchozí: {path})                        | where to keep the report (default: {path})
-cli_all          | vypsat i soubory, které jsou v pořádku                     | list the files that are fine as well
-cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované      | re-encode every file, not just the weakly compressed ones
-cli_dry_run      | nic nezapisovat, jen spočítat výsledek                     | write nothing, only compute the outcome
-cli_yes          | neptat se na potvrzení                                     | do not ask for confirmation
-cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 0 = přepsat vždy) | smallest saving in %% per file (default: 0 = always rewrite)
-cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny | target sample rate in Hz (e.g. 48000), otherwise left as it is
-cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny       | target bit depth (16, 24, 32), otherwise left as it is
-cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk | do not put the original aside as *{suffix}, not even where the audio changes
-cli_force        | analyzovat vše znovu, i beze změny od minule               | re-analyse everything, even what has not changed
-cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)           | scan the folder and store a report (decodes, slow)
-cli_cmd_show     | znovu vypsat uložený report                                | print the stored report again
-cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé) | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
-cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou) | re-encode weakly compressed files in place (lossless, tags kept)
+cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.                  | Checks a FLAC library: compression, subset, damage.
+cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.               | Run analyze first, then reencode or repair as needed.
+cli_command      | příkaz                                                                | command
+cli_folder       | složka s hudbou (rekurzivně)                                          | music folder (recursive)
+cli_jobs         | paralelních procesů (výchozí: počet jader)                            | parallel jobs (default: CPU count)
+cli_lang         | jazyk výstupu (výchozí: podle prostředí)                              | output language (default: from the environment)
+cli_report       | kam uložit report (výchozí: {path})                                   | where to keep the report (default: {path})
+cli_all          | vypsat i soubory, které jsou v pořádku                                | list the files that are fine as well
+cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované                 | re-encode every file, not just the weakly compressed ones
+cli_dry_run      | nic nezapisovat, jen spočítat výsledek                                | write nothing, only compute the outcome
+cli_yes          | neptat se na potvrzení                                                | do not ask for confirmation
+cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny      | target sample rate in Hz (e.g. 48000), otherwise left as it is
+cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny                  | target bit depth (16, 24, 32), otherwise left as it is
+cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk          | do not put the original aside as *{suffix}, not even where the audio changes
+cli_force        | analyzovat vše znovu, i beze změny od minule                          | re-analyse everything, even what has not changed
+cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)                      | scan the folder and store a report (decodes, slow)
+cli_cmd_show     | znovu vypsat uložený report                                           | print the stored report again
+cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé)    | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
+cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou)  | re-encode weakly compressed files in place (lossless, tags kept)
 cli_cmd_repair   | opravit vady: subset, hlavička, poškozený zvuk (originál → *{suffix}) | fix defects: subset, header, damaged audio (original → *{suffix})
-cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu | delete the originals put aside as *{suffix} once their replacement is in place
+cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu            | delete the originals put aside as *{suffix} once their replacement is in place
 """)
 
 
@@ -973,7 +967,6 @@ class Status(str, enum.Enum):
     """How the work on one file turned out."""
 
     DONE = "done"                # the file on disk was replaced
-    NO_GAIN = "no_gain"          # saving below the threshold, original kept
     DRY_RUN = "dry_run"          # measured only, nothing written
     FAILED = "failed"            # error, original kept
 
@@ -1020,33 +1013,6 @@ class Outcome:
 # --------------------------------------------------------------------------
 # Re-encoding in place
 # --------------------------------------------------------------------------
-
-
-def meets_threshold(saving: int, original_size: int,
-                    min_saving_pct: float | None) -> bool:
-    """Is the saving on ONE file worth rewriting it?
-
-    `None` means no threshold at all: that is the subset fix, where the point
-    is playability rather than space, so the file is rewritten even when it
-    grows a little. Zero means the same thing and is the default: every file
-    is rewritten, whatever it does to the size. Only a number above zero
-    actually holds anything back.
-
-    Judged per file, never from a folder average - a few bad files among a
-    hundred good ones would dissolve below the threshold even though rewriting
-    exactly those pays off. Measured: 1 file saving 50 % among 80 good ones
-    averages 4.17 %, i.e. under the default threshold.
-
-    A threshold above zero only skips work someone considers pointless. On a
-    real library files with block 1152 save 11-17 % and everything else stays
-    under 1 %, so `--min-saving 1` splits exactly that gap for anyone who
-    wants the big wins alone.
-    """
-    if min_saving_pct is None or min_saving_pct <= 0:
-        return True
-    if original_size <= 0:
-        return False
-    return saving > 0 and saving / original_size * 100 >= min_saving_pct
 
 
 def raw_audio_md5(path: str) -> bytes:
@@ -1148,13 +1114,15 @@ def put_in_place(path: str, tmp: str, backup: str = "") -> None:
         raise
 
 
-def recompress_file(info: FlacInfo, min_saving_pct: float | None,
-                    dry_run: bool, kind: Kind = Kind.REENCODE) -> Outcome:
+def recompress_file(info: FlacInfo, dry_run: bool,
+                    kind: Kind = Kind.REENCODE) -> Outcome:
     """Re-encode one file in place.
 
-    The original is replaced only when the new file passes the losslessness
-    check and the saving is real. Errors are returned as Status.FAILED rather
-    than raised - one broken file must not stop a whole library.
+    The original is replaced whenever the new file passes the losslessness
+    check, whatever that did to the size: a file is judged on its own, and
+    the few that come out a fraction of a percent larger are not worth a knob
+    to hold them back. Errors are returned as Status.FAILED rather than
+    raised - one broken file must not stop a whole library.
     """
     path = info.path
     old_size = os.path.getsize(path)
@@ -1175,10 +1143,6 @@ def recompress_file(info: FlacInfo, min_saving_pct: float | None,
 
         assert_lossless(info, tmp)
         new_size = os.path.getsize(tmp)
-
-        if not meets_threshold(old_size - new_size, old_size, min_saving_pct):
-            os.remove(tmp)
-            return Outcome(info, kind, Status.NO_GAIN, old_size, new_size)
         if dry_run:
             os.remove(tmp)
             return Outcome(info, kind, Status.DRY_RUN, old_size, new_size)
@@ -2538,11 +2502,10 @@ def print_findings(report: Report, show_all: bool) -> None:
 
 #: The symbol each status is announced with. Two characters wide throughout,
 #: so the file names line up whatever happened to them.
-MARKS = {Status.DONE: "✅", Status.DRY_RUN: "○ ",
-         Status.NO_GAIN: "○ ", Status.FAILED: "❌"}
+MARKS = {Status.DONE: "✅", Status.DRY_RUN: "○ ", Status.FAILED: "❌"}
 
 
-def result_detail(res: Outcome, min_saving: float) -> str:
+def result_detail(res: Outcome) -> str:
     """The one line saying what happened to a file.
 
     Failure and "nothing gained" read the same whatever was attempted, so
@@ -2552,15 +2515,10 @@ def result_detail(res: Outcome, min_saving: float) -> str:
         key = ("rc_failed" if res.kind in (Kind.REENCODE, Kind.CONVERT,
                                            Kind.SUBSET) else "fix_failed")
         return t(key, error=res.error)
-    if res.status is Status.NO_GAIN:
-        # Only a threshold above zero produces this status at all.
-        return t("rc_skipped", min=min_saving, saved=human(res.saved))
-
     dry = res.status is Status.DRY_RUN
     if res.kind is Kind.REENCODE:
         if res.saved <= 0:
-            # Without a threshold even these are rewritten, so say plainly
-            # that the rewrite bought nothing.
+            # These are rewritten too, so say plainly that it bought nothing.
             return (t("rc_nogain_dry", pct=abs(res.saved_pct)) if dry
                     else t("rc_nogain_done", old=human(res.old_size),
                            new=human(res.new_size), pct=abs(res.saved_pct)))
@@ -2595,9 +2553,9 @@ def result_detail(res: Outcome, min_saving: float) -> str:
     return t("fix_recovered", pct=res.recovered_pct, lost=lost)
 
 
-def print_result(res: Outcome, root: str, min_saving: float = 0.0) -> None:
+def print_result(res: Outcome, root: str) -> None:
     """One outcome: what happened, and what it left behind."""
-    lines = [result_detail(res, min_saving)]
+    lines = [result_detail(res)]
     if res.kind in (Kind.HEADER, Kind.SALVAGE) and res.status is Status.DRY_RUN:
         lines.append(t("fix_dry"))
     elif res.status is Status.DONE and res.backup_path:
@@ -3027,18 +2985,13 @@ def cmd_find_fake(args) -> int:
 
 def run_write_command(args, report: Report, targets: Sequence, nothing: str,
                       intro: Callable, running: Callable, worker: Callable,
-                      summary: Callable, min_saving: float = 0.0,
-                      list_skipped: bool = True) -> int:
+                      summary: Callable) -> int:
     """The skeleton both `reencode` and `repair` follow.
 
     Check the findings still hold, say what is about to happen, ask, do it in
     parallel, report, and write the report back. Only the targets, the wording
     and the summary differ - keeping the rest in one place is what guarantees
     the two commands treat a stale report or a refused confirmation alike.
-
-    `list_skipped` prints the files nothing was done to. Over a whole library
-    those are the majority, so `reencode --all` turns it off and lets the
-    summary count them instead.
     """
     if not targets:
         print(t(nothing))
@@ -3066,8 +3019,7 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
 
     print()
     for res in sorted(results, key=lambda r: r.info.path):
-        if list_skipped or res.status is not Status.NO_GAIN:
-            print_result(res, report.root, min_saving)
+        print_result(res, report.root)
 
     by_path, changed = report.by_path(), 0
     for res in results:
@@ -3118,15 +3070,15 @@ def wanted_format(args) -> str:
 def cmd_reencode(args) -> int:
     """Squeeze weakly encoded files, or with --all everything the report holds.
 
-    The audio is verified sample for sample either way, so there is nothing to
-    lose and no backup to keep - and --min-saving still decides which of the
-    new files are worth keeping.
+    The audio is verified sample for sample either way, so there is nothing
+    to lose and no backup to keep, and every file that passes is written back
+    whatever it did to the size.
 
     --sample-rate and --bits break that promise on purpose: a file that is not
-    in the wanted format goes through ffmpeg instead, comes back as different
-    audio, and --min-saving no longer has a say - the point is the format, not
-    the size. Everything already in the wanted format is re-encoded as always,
-    and --keep-original therefore puts aside only what was really converted.
+    in the wanted format goes through ffmpeg instead and comes back as
+    different audio. Everything already in the wanted format is re-encoded as
+    always, and the original is therefore put aside only for what was really
+    converted.
     """
     report = require_report(args)
     if report is None:
@@ -3157,11 +3109,14 @@ def cmd_reencode(args) -> int:
                       if needs_conversion(a.info, args)) if convert else 0
         if turning:
             lines.append(t("rc_conv_to", format=wanted_format(args)))
+            # Only 16 bit is dithered, so only 16 bit may be promised it.
+            if any(target_format(a.info, args)[1] == 16 for a in live
+                   if needs_conversion(a.info, args)):
+                lines.append(t("rc_conv_dither"))
             if turning < len(live):
                 lines.append(t("rc_conv_num", count=files(turning)))
         if args.all:
-            lines.append(t("rc_all_scope", min=args.min_saving)
-                         if args.min_saving > 0 else t("rc_all_any"))
+            lines.append(t("rc_all_any"))
             if added:
                 lines.append(t("rc_all_new", count=files(added)))
             if defective:
@@ -3179,7 +3134,6 @@ def cmd_reencode(args) -> int:
     def summary(results: Sequence) -> list:
         rows = []
         for status, key in ((Status.DRY_RUN, "sum_done"), (Status.DONE, "sum_done"),
-                            (Status.NO_GAIN, "sum_skipped"),
                             (Status.FAILED, "sum_failed")):
             if not (group := [r for r in results if r.status is status]):
                 continue
@@ -3203,7 +3157,7 @@ def cmd_reencode(args) -> int:
         if convert and needs_conversion(a.info, args):
             return convert_file(a.info, *target_format(a.info, args),
                                 args.dry_run, args.keep_original)
-        return recompress_file(a.info, args.min_saving, args.dry_run)
+        return recompress_file(a.info, args.dry_run)
 
     if args.all:
         targets = healthy
@@ -3217,7 +3171,7 @@ def cmd_reencode(args) -> int:
         args, report, targets, "rc_nothing", intro,
         lambda live: t("rc_running_dry" if args.dry_run else "rc_running",
                        count=files(len(live))),
-        worker, summary, args.min_saving, list_skipped=not args.all)
+        worker, summary)
 
 
 def cmd_repair(args) -> int:
@@ -3261,9 +3215,7 @@ def cmd_repair(args) -> int:
 
     def repair_one(item: Analysis) -> Outcome:
         if kind[id(item)] is Kind.SUBSET:
-            # No saving threshold here: the point is playability, not space,
-            # and returning into the subset may cost a fraction of a percent.
-            return recompress_file(item.info, None, args.dry_run,
+            return recompress_file(item.info, args.dry_run,
                                    kind=Kind.SUBSET)
         if kind[id(item)] is Kind.HEADER:
             return patch_stream_header(item.info, args.dry_run)
@@ -3399,8 +3351,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_write_options(reencode)
     reencode.add_argument("--all", action="store_true",
                           help=t("cli_all_reencode"))
-    reencode.add_argument("--min-saving", type=float, default=0.0, metavar="PCT",
-                          help=t("cli_min_saving"))
     reencode.add_argument("--sample-rate", type=int, metavar="HZ",
                           help=t("cli_sample_rate"))
     reencode.add_argument("--bits", type=int, choices=sorted(RAW_FORMATS),
