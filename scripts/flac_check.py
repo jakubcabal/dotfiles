@@ -81,21 +81,27 @@ replaced atomically (os.replace) only after the new file passes both an MD5
 check of the decoded audio and `flac -t`. On any problem the temporary file
 is removed and the original is left untouched.
 
-`reencode --sample-rate/--bits` is the one exception, and the only write in
-the script that is not lossless: the audio is deliberately a different one
-afterwards, so the original MD5 cannot match. What is verified instead is that
-the file really has the requested format, is as long as the change of rate
-implies, and that its header MD5 matches the audio it decodes to - which is
-what proves the encoder wrote down exactly what the resampler produced. The
-original is replaced like any other, unless --keep-original puts it aside as
-<name>.orig.flac; either way the confirmation says which, before anything is
-written.
+`reencode --sample-rate/--bits` is not a lossless write: the audio is
+deliberately a different one afterwards, so the original MD5 cannot match.
+What is verified instead is that the file really has the requested format, is
+as long as the change of rate implies, and that its header MD5 matches the
+audio it decodes to - which is what proves the encoder wrote down exactly what
+the resampler produced.
 
 `repair` handles three defects. Returning a file into the subset and
-correcting a lying header are both verifiable, so the original is simply
-replaced. Salvaging damaged audio is not - part of it is already gone - so
-there the original is kept as <name>.orig.flac and tags and cover art are
-carried over into the replacement.
+correcting a lying header leave the audio alone, so the file is simply
+replaced. Salvaging damaged audio does not: part of it is already gone, the
+MD5 will never match again, and tags and cover art have to be carried over
+into the replacement by hand.
+
+WHAT BECOMES OF THE ORIGINALS
+One rule across the commands: a write that changes the audio - converting and
+salvaging - puts the original aside as <name>.orig.flac first, and one that
+does not need to, because it is verified bit for bit, simply replaces the
+file. `--no-keep-original` turns the first half off on both commands, and the
+confirmation says which of the two is about to happen. An original already put
+aside is never overwritten, so a second run cannot bury the real one; when the
+new files have proved themselves, `drop-originals` clears them out.
 
 Whether to rewrite a file is decided PER FILE, never from a folder average,
 see meets_threshold().
@@ -243,16 +249,18 @@ fix_nothing       | Report nehlásí žádný poškozený soubor.               
 fix_confirm       | Chystám se opravit {count}:                                | About to repair {count}:
 fix_intro_subset  | {count} mimo subset - překóduji na místě, ověřím proti MD5 | {count} outside the subset - re-encoded in place, MD5 verified
 fix_intro_header  | {count} s vadnou hlavičkou - opravím jen ji, zvuk zůstane  | {count} with a bad header - only it is corrected, audio stays
-fix_intro_salvage | {count} s poškozeným zvukem - zachráním, co jde; originál → *{suffix} | {count} damaged - whatever is readable is salvaged; original → *{suffix}
+fix_intro_salvage | {count} s poškozeným zvukem - zachráním, co půjde přečíst    | {count} damaged - whatever is readable is salvaged
 fix_header_done   | hlavička opravena, {old} → {new} vzorků, zvuk nezměněn     | header corrected, {old} → {new} samples, audio untouched
 fix_running       | Zachraňuji ({count})                                       | Salvaging ({count})
 fix_recovered     | zachráněno {pct:.2f} %{lost}                               | recovered {pct:.2f} %{lost}
 fix_lost          | , ztraceno {seconds:.2f} s                                 | , {seconds:.2f} s lost
 fix_no_loss       | , beze ztráty                                              | , nothing lost
 fix_backed_up     | originál → {name}                                          | original → {name}
+orig_kept         | originál se odkládá jako *{suffix}                         | the original is put aside as *{suffix}
+orig_drop         | originál se nikam neodkládá, přepíše se rovnou             | no copy of the original is kept, it is overwritten
+orig_exists       | {name} tu už je a ten se nepřepisuje                       | {name} is already there and is never overwritten
 fix_dry           | nanečisto, nic se nezapsalo                                | dry run, nothing written
 fix_failed        | záchrana selhala: {error}                                  | salvage failed: {error}
-fix_exists        | {name} už existuje - originál by se přepsal, přeskakuji    | {name} already exists - the original would be lost, skipping
 fix_no_meta       | tagy se přenést nepodařilo                                 | tags could not be carried over
 
 # --- reencode ---------------------------------------------------------
@@ -264,15 +272,13 @@ rc_all_skipped  | {count} s vadou vynecháno, na ty je repair                 | 
 rc_all_new      | {count} přibylo od poslední analýzy                        | {count} appeared since the last analyze
 rc_conv_to      | převod na {format}, přepočítá soxr s ditherem shibata      | conversion to {format}, recomputed by soxr with shibata dither
 rc_conv_num     | {count} se převede, zbytek se jen překóduje                | {count} will be converted, the rest are only re-encoded
-rc_conv_risk    | Zvuk se PŘEPOČÍTÁ - není to bezeztrátové a originál nikde nezůstane. | The audio is RECOMPUTED - this is not lossless and no copy of the original is kept.
-rc_conv_kept    | Zvuk se PŘEPOČÍTÁ, ale převedené soubory zůstanou i v originále jako *{suffix}. | The audio is RECOMPUTED, but every converted file is also kept as it was, as *{suffix}.
+rc_conv_warn    | Zvuk se PŘEPOČÍTÁ, není to bezeztrátové.                   | The audio is RECOMPUTED, this is not lossless.
 rc_conv_meta    | Tagy i obal zůstanou, cuesheet ne: odkazuje na vzorky, a ty se mění. | Tags and cover art are kept, the cuesheet is not: it indexes samples, and those change.
 rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})              | {oldfmt} → {newfmt}, {old} → {new} ({change})
 rc_conv_would   | převedl by se na {newfmt} ({change}), soubor nezměněn      | would be converted to {newfmt} ({change}), file unchanged
 rc_conv_rate    | {khz:g} kHz (hloubka beze změny)                           | {khz:g} kHz (depth left as it is)
 rc_conv_bits    | {bits} bit (frekvence beze změny)                          | {bits} bit (rate left as it is)
 rc_conv_bad     | {rate} Hz se do FLACu nezapíše, zvol běžnou frekvenci      | FLAC cannot store {rate} Hz, pick a common rate
-rc_conv_exists  | {name} už existuje, originál by se ztratil                 | {name} already exists, the original would be lost
 rc_settings     | nastavení: flac {opts}                                     | settings: flac {opts}
 rc_promise      | Zvuk zůstane bit po bitu stejný (ověřuje se MD5), tagy a obal také. | The audio stays bit-for-bit identical (MD5 checked), so do tags and cover art.
 rc_not_tty      | Vstup není terminál - pro neinteraktivní běh použij --yes. | Input is not a terminal - use --yes for non-interactive runs.
@@ -388,7 +394,7 @@ cli_yes          | neptat se na potvrzení                                     |
 cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 0 = přepsat vždy) | smallest saving in %% per file (default: 0 = always rewrite)
 cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny | target sample rate in Hz (e.g. 48000), otherwise left as it is
 cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny       | target bit depth (16, 24, 32), otherwise left as it is
-cli_keep_orig    | u převodu odložit originál jako *{suffix} (překódování je bezeztrátové, tam se nezálohuje) | keep the original of a converted file as *{suffix} (a re-encode is lossless, nothing is kept there)
+cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk | do not put the original aside as *{suffix}, not even where the audio changes
 cli_force        | analyzovat vše znovu, i beze změny od minule               | re-analyse everything, even what has not changed
 cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)           | scan the folder and store a report (decodes, slow)
 cli_cmd_show     | znovu vypsat uložený report                                | print the stored report again
@@ -1083,6 +1089,43 @@ def _copy_owner_and_times(source: str, target: str) -> None:
         pass                        # not enough rights, never mind
 
 
+def set_aside(path: str, keep: bool) -> str:
+    """The name the original of `path` is put aside under, "" when the caller
+    asked for it not to be.
+
+    Every write that changes the audio goes through here, so the rule is the
+    same wherever it happens: an original already put aside is never
+    overwritten, otherwise a second run would replace the true original with
+    an already rewritten one.
+    """
+    if not keep:
+        return ""
+    backup = os.path.splitext(path)[0] + ORIG_SUFFIX
+    if os.path.exists(backup):
+        raise RuntimeError(t("orig_exists", name=os.path.basename(backup)))
+    return backup
+
+
+def put_in_place(path: str, tmp: str, backup: str = "") -> None:
+    """Move the finished temporary file over the original, atomically.
+
+    With a `backup` the original is renamed aside first and put back if the
+    swap then fails, so there is no moment in which neither of them is there.
+    """
+    # flac keeps the modification time itself (--preserve-modtime is its
+    # default) but carries over neither mode nor owner.
+    _copy_owner_and_times(path, tmp)
+    if not backup:
+        os.replace(tmp, path)           # atomic, the original never disappears
+        return
+    os.rename(path, backup)             # same directory, so atomic
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        os.rename(backup, path)         # put the original back
+        raise
+
+
 def recompress_file(info: FlacInfo, min_saving_pct: float | None,
                     dry_run: bool, kind: Kind = Kind.REENCODE) -> Outcome:
     """Re-encode one file in place.
@@ -1118,10 +1161,7 @@ def recompress_file(info: FlacInfo, min_saving_pct: float | None,
             os.remove(tmp)
             return Outcome(info, kind, Status.DRY_RUN, old_size, new_size)
 
-        # flac keeps the modification time itself (--preserve-modtime is its
-        # default) but carries over neither mode nor owner.
-        _copy_owner_and_times(path, tmp)
-        os.replace(tmp, path)       # atomic, the original never disappears
+        put_in_place(path, tmp)     # verified lossless, so nothing to keep
         return Outcome(info, kind, Status.DONE, old_size, new_size)
 
     except (OSError, RuntimeError, ValueError) as e:
@@ -1164,7 +1204,7 @@ def assert_converted(original: FlacInfo, new_path: str, rate: int, bits: int,
 
 
 def convert_file(info: FlacInfo, rate: int, bits: int,
-                 dry_run: bool, keep_original: bool = False) -> Outcome:
+                 dry_run: bool, keep_original: bool = True) -> Outcome:
     """Resample and requantise one file in place.
 
     ffmpeg only moves the samples to the wanted rate and depth and passes them
@@ -1173,28 +1213,22 @@ def convert_file(info: FlacInfo, rate: int, bits: int,
     `-vn` keeps the cover art out of that pipe - handed to ffmpeg as a video
     stream it would be re-encoded, and a broken one fails the whole run.
 
-    This is the one write that is not lossless, so unless `keep_original` puts
-    the file aside as <name>.orig.flac, it is gone once this succeeds - which
-    is what the confirmation says before any of this starts. An existing backup
-    is never overwritten, otherwise a second run would replace the true
-    original with an already converted one.
+    This is not a lossless write, so the original is put aside as
+    <name>.orig.flac like every other write that changes the audio - unless
+    the caller asked for it not to be, which the confirmation says out loud
+    before any of this starts.
     """
     path = info.path
     old_size = os.path.getsize(path)
-    backup = os.path.splitext(path)[0] + ORIG_SUFFIX if keep_original else ""
     result = Outcome(info, Kind.CONVERT, Status.FAILED, old_size,
-                     rate=rate, bits=bits, backup_path=backup)
-    # Checked in a dry run too: a run that would fail has to say so beforehand.
-    # Worded apart from repair's: this one is printed with "- original kept"
-    # after it, and "skipping - original kept" would say the same thing twice.
-    if backup and os.path.exists(backup):
-        return _failed(result, t("rc_conv_exists",
-                                 name=os.path.basename(backup)))
-
+                     rate=rate, bits=bits)
     expected = round(info.total_samples * rate / info.sample_rate)
     tmp = os.path.join(os.path.dirname(path) or ".",
                        f".{os.path.basename(path)}.convert.tmp")
     try:
+        # Asked before any work: a run that would fail has to say so in a dry
+        # run too.
+        result.backup_path = set_aside(path, keep_original)
         # ffmpeg's own errors go to a file, not a pipe: flac is holding the
         # other pipe open, and two full buffers would deadlock the pair.
         with tempfile.TemporaryFile() as log:
@@ -1236,16 +1270,7 @@ def convert_file(info: FlacInfo, rate: int, bits: int,
             result.status = Status.DRY_RUN
             return result
 
-        _copy_owner_and_times(path, tmp)
-        if backup:
-            os.rename(path, backup)     # same directory, so atomic
-            try:
-                os.replace(tmp, path)
-            except OSError:
-                os.rename(backup, path)  # put the original back
-                raise
-        else:
-            os.replace(tmp, path)   # atomic, the original never disappears
+        put_in_place(path, tmp, result.backup_path)
         result.status = Status.DONE
         return result
 
@@ -1718,8 +1743,7 @@ def patch_stream_header(info: FlacInfo, dry_run: bool) -> Outcome:
         # The patched copy has to decode cleanly before it replaces anything;
         # that is what makes the missing backup acceptable here.
         flac_test(tmp)
-        _copy_owner_and_times(path, tmp)
-        os.replace(tmp, path)
+        put_in_place(path, tmp)     # the audio is untouched, nothing to keep
     except (OSError, RuntimeError, ValueError) as e:
         _failed(result, str(e))
         try:
@@ -1729,31 +1753,29 @@ def patch_stream_header(info: FlacInfo, dry_run: bool) -> Outcome:
     return result
 
 
-def repair_damaged_file(info: FlacInfo, dry_run: bool) -> Outcome:
+def repair_damaged_file(info: FlacInfo, dry_run: bool,
+                        keep_original: bool = True) -> Outcome:
     """Salvage what is readable from a damaged file and put it in its place.
 
     `flac -d -F` keeps decoding past errors, so everything readable comes out
     of a truncated or corrupted stream.
 
-    The original is not thrown away: it is renamed to <name>.orig.flac first.
-    Losslessness cannot be verified here - part of the audio is already gone
-    and the MD5 in the header will never match again - so the untouched
-    original stays the last chance for a better recovery later. An existing
-    backup is never overwritten, otherwise a second run would replace the true
-    original with an already-salvaged one.
+    The original is put aside as <name>.orig.flac, the same as any other write
+    that changes the audio - and the one where it matters most: losslessness
+    cannot be verified here, part of the audio is already gone and the MD5 in
+    the header will never match again, so the untouched original is the last
+    chance for a better recovery later. Dropping it is the caller's to ask for.
     """
     path = info.path
-    backup = os.path.splitext(path)[0] + ORIG_SUFFIX
-    result = Outcome(info=info, kind=Kind.SALVAGE, backup_path=backup,
+    result = Outcome(info=info, kind=Kind.SALVAGE,
                      status=Status.DRY_RUN if dry_run else Status.DONE)
-
-    if os.path.exists(backup):
-        return _failed(result, t("fix_exists", name=os.path.basename(backup)))
-
     tmp = os.path.join(os.path.dirname(path) or ".",
                        f".{os.path.basename(path)}.repair.tmp")
     target = os.devnull if dry_run else tmp
     try:
+        # Asked before any work: a run that would fail has to say so in a dry
+        # run too.
+        result.backup_path = set_aside(path, keep_original)
         dec = subprocess.Popen(
             ["flac", "-d", "-F", "-s", "-c", "--", path],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -1785,13 +1807,7 @@ def repair_damaged_file(info: FlacInfo, dry_run: bool) -> Outcome:
         if not result.recovered_samples:
             raise RuntimeError(t("err_no_frames"))
 
-        _copy_owner_and_times(path, tmp)
-        os.rename(path, backup)         # same directory, so atomic
-        try:
-            os.replace(tmp, path)
-        except OSError:
-            os.rename(backup, path)     # put the original back
-            raise
+        put_in_place(path, tmp, result.backup_path)
     except (OSError, RuntimeError, ValueError) as e:
         _failed(result, str(e))
         if not dry_run:
@@ -2542,6 +2558,11 @@ def print_table(rows: Sequence) -> None:
         print(f"{label + ':':<38}{value}")
 
 
+def original_note(keep: bool) -> str:
+    """The one line both commands say about what becomes of the originals."""
+    return t("orig_kept", suffix=ORIG_SUFFIX) if keep else t("orig_drop")
+
+
 def print_advice(lines: Sequence) -> None:
     if lines:
         print("\n" + t("adv_next"))
@@ -3091,8 +3112,7 @@ def cmd_reencode(args) -> int:
         if not turning:
             lines.append(t("rc_promise"))
         else:
-            lines += [t("rc_conv_kept", suffix=ORIG_SUFFIX)
-                      if args.keep_original else t("rc_conv_risk"),
+            lines += [t("rc_conv_warn"), original_note(args.keep_original),
                       t("rc_conv_meta")]
         return lines[:1] + ["  " + line for line in lines[1:]]
 
@@ -3172,8 +3192,11 @@ def cmd_repair(args) -> int:
                           (Kind.HEADER, "fix_intro_header"),
                           (Kind.SALVAGE, "fix_intro_salvage")):
             if counts[name]:
-                lines.append("  " + t(key, count=files(counts[name]),
-                                      suffix=ORIG_SUFFIX))
+                lines.append("  " + t(key, count=files(counts[name])))
+        # Salvaging is the only repair that changes the audio, so it is the
+        # only one the originals are about.
+        if counts[Kind.SALVAGE]:
+            lines.append("  " + original_note(args.keep_original))
         return lines
 
     def repair_one(item: Analysis) -> Outcome:
@@ -3184,7 +3207,8 @@ def cmd_repair(args) -> int:
                                    kind=Kind.SUBSET)
         if kind[id(item)] is Kind.HEADER:
             return patch_stream_header(item.info, args.dry_run)
-        return repair_damaged_file(item.info, args.dry_run)
+        return repair_damaged_file(item.info, args.dry_run,
+                                   args.keep_original)
 
     def summary(results: Sequence) -> list:
         settled = [r for r in results
@@ -3280,6 +3304,12 @@ def _add_common(parser: argparse.ArgumentParser, jobs: bool = True) -> None:
 def _add_write_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", help=t("cli_dry_run"))
     parser.add_argument("-y", "--yes", action="store_true", help=t("cli_yes"))
+    # Both commands can change the audio - reencode by converting, repair by
+    # salvaging - so both keep the original by default and both take the one
+    # flag that says not to.
+    parser.add_argument("--no-keep-original", dest="keep_original",
+                        action="store_false",
+                        help=t("cli_no_keep_orig", suffix=ORIG_SUFFIX))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3315,8 +3345,6 @@ def build_parser() -> argparse.ArgumentParser:
                           help=t("cli_sample_rate"))
     reencode.add_argument("--bits", type=int, choices=sorted(RAW_FORMATS),
                           help=t("cli_bits"))
-    reencode.add_argument("--keep-original", action="store_true",
-                          help=t("cli_keep_orig", suffix=ORIG_SUFFIX))
 
     repair = subparsers.add_parser("repair",
                                    help=t("cli_cmd_repair", suffix=ORIG_SUFFIX))
