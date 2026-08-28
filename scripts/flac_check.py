@@ -380,7 +380,6 @@ cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.       
 cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.               | Run analyze first, then reencode or repair as needed.
 cli_command      | příkaz                                                                | command
 cli_folder       | složka s hudbou (rekurzivně)                                          | music folder (recursive)
-cli_jobs         | paralelních procesů (výchozí: počet jader)                            | parallel jobs (default: CPU count)
 cli_lang         | jazyk výstupu (výchozí: podle prostředí)                              | output language (default: from the environment)
 cli_report       | kam uložit report (výchozí: {path})                                   | where to keep the report (default: {path})
 cli_all          | vypsat i soubory, které jsou v pořádku                                | list the files that are fine as well
@@ -490,6 +489,11 @@ LEVEL_WINDOW = 60
 # Measured throughput per thread (MB/s), for rough run-time estimates only.
 # On 12 cores: deep 832 MB in 2.6 s, encode 832 MB in 5.9 s, fake ~1.5 MB/s.
 DEEP_RATE, ENCODE_RATE, FAKE_RATE = 25, 12, 2
+
+#: How many files are worked on at once. Every stage here spends its time in
+#: `flac` or `ffmpeg`, one process per file, so the core count is the answer
+#: and there was never a second one worth offering.
+JOBS = max(1, os.cpu_count() or 4)
 
 #: The stereo search the encoder evidently used, named the way flac names it.
 #: Technical tokens, so they need no translation.
@@ -2778,7 +2782,7 @@ def report_advice(report: Report, args) -> list:
         size = sum(a.info.file_size for a in weak)
         advice.append(t("adv_reencode", cmd=command_hint("reencode", root),
                         count=files(len(weak)),
-                        eta=estimate(size, ENCODE_RATE, args.jobs)))
+                        eta=estimate(size, ENCODE_RATE, JOBS)))
     # An entry can sit in the report without ever having been decoded: taken
     # in by find-fake or reencode, or rewritten since. Only analyze fills it
     # in, and until it does, "nothing found" means "nothing looked at".
@@ -2798,7 +2802,7 @@ def report_advice(report: Report, args) -> list:
     if unchecked:
         size = sum(a.info.file_size for a in unchecked)
         advice.append(t("adv_findfake", cmd=command_hint("find-fake", root),
-                        eta=estimate(size, FAKE_RATE, args.jobs)))
+                        eta=estimate(size, FAKE_RATE, JOBS)))
     return advice
 
 
@@ -2841,7 +2845,7 @@ def cmd_analyze(args) -> int:
         except ValueError:
             previous = {}            # unusable report, simply analyse again
 
-    infos = read_all_metadata(paths, args.jobs)
+    infos = read_all_metadata(paths, JOBS)
     items, todo = [], []
     for info in infos:
         old = previous.get(info.path)
@@ -2860,13 +2864,13 @@ def cmd_analyze(args) -> int:
     readable = [i for i in todo if not i.error]
     if readable:
         run_parallel(t("run_deep", count=len(readable)), readable, deep_worker,
-                     args.jobs, weight=_by_size)
+                     JOBS, weight=_by_size)
 
     fresh = [classify(info) for info in todo]
     if broken := [a for a in fresh if a.damaged]:
         reports = run_parallel(t("dmg_locating", count=files(len(broken))),
                                broken, lambda a: diagnose_damage(a.info),
-                               args.jobs, weight=_by_size)
+                               JOBS, weight=_by_size)
         for item, damage in zip(broken, reports):
             item.damage = damage
 
@@ -2924,7 +2928,7 @@ def cmd_find_fake(args) -> int:
     if report:
         # Files that appeared since the last analyze are taken in, entries
         # whose file is gone simply do not survive the rebuild.
-        adopt_new_files(report, args.jobs, paths)
+        adopt_new_files(report, JOBS, paths)
         known = report.by_path()
         report.items = [known[path] for path in paths]
         # Damaged files are included: analyze failed them on a decode error,
@@ -2934,7 +2938,7 @@ def cmd_find_fake(args) -> int:
         targets = [a for a in report.items if not a.unreadable]
     else:
         targets = [Analysis(info=info)
-                   for info in read_all_metadata(paths, args.jobs)
+                   for info in read_all_metadata(paths, JOBS)
                    if not info.error]
 
     if not targets:
@@ -2952,7 +2956,7 @@ def cmd_find_fake(args) -> int:
     if todo:
         measured = run_parallel(t("fake_running", count=len(todo)),
                                 [a.info for a in todo], check_fake_source,
-                                args.jobs, weight=_by_size, cpu_bound=True)
+                                JOBS, weight=_by_size, cpu_bound=True)
         for item, res in zip(todo, measured):
             item.fake = res
     results = [a.fake for a in targets if a.fake]
@@ -3014,7 +3018,7 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
         return 1
 
     print()
-    results = run_parallel(running(live), live, worker, args.jobs,
+    results = run_parallel(running(live), live, worker, JOBS,
                            weight=_by_size)
 
     print()
@@ -3092,7 +3096,7 @@ def cmd_reencode(args) -> int:
     # The report already lists every file of the folder, the clean ones
     # included - but only as of the last analyze, so --all also picks up what
     # has appeared since.
-    added = len(adopt_new_files(report, args.jobs)) if args.all else 0
+    added = len(adopt_new_files(report, JOBS)) if args.all else 0
     # A damaged file always carries info.error too, so this one condition
     # drops both the unreadable and the damaged: re-encoding fixes neither,
     # and the MD5 of a file with a lying header cannot even be checked.
@@ -3302,11 +3306,8 @@ COMMANDS = {"analyze": cmd_analyze, "show": cmd_show, "find-fake": cmd_find_fake
 NEEDS_FLAC = {"analyze", "find-fake", "reencode", "repair"}
 
 
-def _add_common(parser: argparse.ArgumentParser, jobs: bool = True) -> None:
+def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("folder", help=t("cli_folder"))
-    if jobs:
-        parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4,
-                            help=t("cli_jobs"))
     parser.add_argument("--report", metavar="FILE",
                         help=t("cli_report",
                                path=short(os.path.dirname(default_report_path(".")))))
@@ -3337,9 +3338,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--force", action="store_true", help=t("cli_force"))
 
     show = subparsers.add_parser("show", help=t("cli_cmd_show"))
-    _add_common(show, jobs=False)
+    _add_common(show)
     show.add_argument("--all", action="store_true", help=t("cli_all"))
-    show.set_defaults(jobs=os.cpu_count() or 4)
 
     find_fake = subparsers.add_parser("find-fake", help=t("cli_cmd_findfake"))
     _add_common(find_fake)
@@ -3362,14 +3362,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_write_options(repair)
 
     # No report and no flac: this one only removes files the other two left
-    # behind, so it takes neither --jobs nor --report.
+    # behind, so it takes no --report either.
     drop = subparsers.add_parser("drop-originals",
                                  help=t("cli_cmd_drop", suffix=ORIG_SUFFIX))
     drop.add_argument("folder", help=t("cli_folder"))
     drop.add_argument("--lang", choices=LANGUAGES, help=t("cli_lang"))
     drop.add_argument("--dry-run", action="store_true", help=t("cli_dry_run"))
     drop.add_argument("-y", "--yes", action="store_true", help=t("cli_yes"))
-    drop.set_defaults(jobs=1, report=None)
+    drop.set_defaults(report=None)
     return parser
 
 
@@ -3396,7 +3396,6 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     set_language(args.lang or detect_language())
-    args.jobs = max(1, args.jobs)
     args.folder = os.path.abspath(os.path.expanduser(args.folder))
 
     if not os.path.isdir(args.folder):
