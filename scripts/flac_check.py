@@ -383,7 +383,6 @@ cli_lang         | jazyk výstupu (výchozí: podle prostředí)                
 cli_report       | kam uložit report (výchozí: {path})                        | where to keep the report (default: {path})
 cli_all          | vypsat i soubory, které jsou v pořádku                     | list the files that are fine as well
 cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované      | re-encode every file, not just the weakly compressed ones
-cli_effort       | standard = -8 (výchozí), exhaustive = -8 -e -p (16x pomalejší, +0,05 %%) | standard = -8 (default), exhaustive = -8 -e -p (16x slower, +0.05 %%)
 cli_dry_run      | nic nezapisovat, jen spočítat výsledek                     | write nothing, only compute the outcome
 cli_yes          | neptat se na potvrzení                                     | do not ask for confirmation
 cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 0 = přepsat vždy) | smallest saving in %% per file (default: 0 = always rewrite)
@@ -463,12 +462,12 @@ SUBSET_BITS_PER_SAMPLE = frozenset({8, 12, 16, 20, 24, 32})
 SUBSET_CODED_RATES = frozenset({8000, 16000, 22050, 24000, 32000, 44100,
                                 48000, 88200, 96000, 176400, 192000})
 
-# Encoder settings. Both stay inside the subset, so the result plays on
-# hardware; deliberately no -l 32 / -r 15 and no --lax. Default is -8 because
-# -e -p measurably gains 0.044 to 0.059 % for about 16x the time (20 MB track:
-# ~10 kB for +13 s).
-EFFORT_PRESETS = {"standard": ["-8"], "exhaustive": ["-8", "-e", "-p"]}
-DEFAULT_EFFORT = "standard"
+# Encoder settings, the same for every write this script makes. -8 stays
+# inside the subset, so the result plays on hardware; deliberately no -l 32 /
+# -r 15 and no --lax. Nothing above it is worth offering: -e -p measurably
+# gains 0.044 to 0.059 % for about 16x the time (20 MB track: ~10 kB for
+# +13 s), which is not a trade anyone would take twice.
+ENCODE_OPTS = ["-8"]
 
 # Changing the sample rate or the bit depth is the one thing flac cannot do,
 # so ffmpeg does that part and hands the raw samples over - the file itself is
@@ -1084,7 +1083,7 @@ def _copy_owner_and_times(source: str, target: str) -> None:
         pass                        # not enough rights, never mind
 
 
-def recompress_file(info: FlacInfo, effort: str, min_saving_pct: float | None,
+def recompress_file(info: FlacInfo, min_saving_pct: float | None,
                     dry_run: bool, kind: Kind = Kind.REENCODE) -> Outcome:
     """Re-encode one file in place.
 
@@ -1102,7 +1101,7 @@ def recompress_file(info: FlacInfo, effort: str, min_saving_pct: float | None,
                        f".{os.path.basename(path)}.recompress.tmp")
     try:
         enc = subprocess.run(["flac", "-s", "-f",
-                              *EFFORT_PRESETS[effort], "-o", tmp, "--", path],
+                              *ENCODE_OPTS, "-o", tmp, "--", path],
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if enc.returncode != 0:
             detail = _last_line(enc.stderr.decode("utf-8", "replace"))
@@ -1164,7 +1163,7 @@ def assert_converted(original: FlacInfo, new_path: str, rate: int, bits: int,
     flac_test(new_path)
 
 
-def convert_file(info: FlacInfo, effort: str, rate: int, bits: int,
+def convert_file(info: FlacInfo, rate: int, bits: int,
                  dry_run: bool, keep_original: bool = False) -> Outcome:
     """Resample and requantise one file in place.
 
@@ -1205,7 +1204,7 @@ def convert_file(info: FlacInfo, effort: str, rate: int, bits: int,
                  "-f", RAW_FORMATS[bits], "-"],
                 stdout=subprocess.PIPE, stderr=log)
             enc = subprocess.run(
-                ["flac", "-s", "-f", *EFFORT_PRESETS[effort],
+                ["flac", "-s", "-f", *ENCODE_OPTS,
                  "--force-raw-format", "--endian=little", "--sign=signed",
                  f"--channels={info.channels}", f"--bps={bits}",
                  f"--sample-rate={rate}", "-o", tmp, "-"],
@@ -1730,7 +1729,7 @@ def patch_stream_header(info: FlacInfo, dry_run: bool) -> Outcome:
     return result
 
 
-def repair_damaged_file(info: FlacInfo, effort: str, dry_run: bool) -> Outcome:
+def repair_damaged_file(info: FlacInfo, dry_run: bool) -> Outcome:
     """Salvage what is readable from a damaged file and put it in its place.
 
     `flac -d -F` keeps decoding past errors, so everything readable comes out
@@ -1759,7 +1758,7 @@ def repair_damaged_file(info: FlacInfo, effort: str, dry_run: bool) -> Outcome:
             ["flac", "-d", "-F", "-s", "-c", "--", path],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         enc = subprocess.run(
-            ["flac", "-s", "-f", *EFFORT_PRESETS[effort], "-o", target, "-"],
+            ["flac", "-s", "-f", *ENCODE_OPTS, "-o", target, "-"],
             stdin=dec.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         dec.stdout.close()
         dec.wait()
@@ -3086,7 +3085,7 @@ def cmd_reencode(args) -> int:
                 lines.append(t("rc_all_new", count=files(added)))
             if defective:
                 lines.append(t("rc_all_skipped", count=files(defective)))
-        lines.append(t("rc_settings", opts=" ".join(EFFORT_PRESETS[args.effort])))
+        lines.append(t("rc_settings", opts=" ".join(ENCODE_OPTS)))
         # The usual promise is the opposite of what a conversion does, so the
         # two are never printed together.
         if not turning:
@@ -3122,9 +3121,9 @@ def cmd_reencode(args) -> int:
 
     def worker(a: Analysis) -> Outcome:
         if convert and needs_conversion(a.info, args):
-            return convert_file(a.info, args.effort, *target_format(a.info, args),
+            return convert_file(a.info, *target_format(a.info, args),
                                 args.dry_run, args.keep_original)
-        return recompress_file(a.info, args.effort, args.min_saving, args.dry_run)
+        return recompress_file(a.info, args.min_saving, args.dry_run)
 
     if args.all:
         targets = healthy
@@ -3181,11 +3180,11 @@ def cmd_repair(args) -> int:
         if kind[id(item)] is Kind.SUBSET:
             # No saving threshold here: the point is playability, not space,
             # and returning into the subset may cost a fraction of a percent.
-            return recompress_file(item.info, args.effort, None, args.dry_run,
+            return recompress_file(item.info, None, args.dry_run,
                                    kind=Kind.SUBSET)
         if kind[id(item)] is Kind.HEADER:
             return patch_stream_header(item.info, args.dry_run)
-        return repair_damaged_file(item.info, args.effort, args.dry_run)
+        return repair_damaged_file(item.info, args.dry_run)
 
     def summary(results: Sequence) -> list:
         settled = [r for r in results
@@ -3279,8 +3278,6 @@ def _add_common(parser: argparse.ArgumentParser, jobs: bool = True) -> None:
 
 
 def _add_write_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--effort", choices=sorted(EFFORT_PRESETS),
-                        default=DEFAULT_EFFORT, help=t("cli_effort"))
     parser.add_argument("--dry-run", action="store_true", help=t("cli_dry_run"))
     parser.add_argument("-y", "--yes", action="store_true", help=t("cli_yes"))
 
