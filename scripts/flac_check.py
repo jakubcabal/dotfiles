@@ -2547,6 +2547,22 @@ def require_report(args) -> Report | None:
     return report
 
 
+def matches_disk(info: FlacInfo) -> bool:
+    """Is the file still the one the report describes?
+
+    Size and modification time, not a checksum: everything stored about a file
+    was read from those exact bytes, so anything that touched them invalidates
+    the lot - and a report must never be trusted about a file that has moved
+    on underneath it.
+    """
+    try:
+        stat = os.stat(info.path)
+    except OSError:
+        return False
+    return (stat.st_size == info.file_size
+            and stat.st_mtime_ns == info.mtime_ns)
+
+
 def live_targets(items: Sequence, root: str) -> tuple:
     """Split targets into those still matching the report and those that
     changed on disk since. Acting on stale findings could rewrite a file for
@@ -2554,20 +2570,17 @@ def live_targets(items: Sequence, root: str) -> tuple:
     fresh, skipped = [], []
     for item in items:
         name = rel(item.info.path, root)
-        try:
-            stat = os.stat(item.info.path)
-        except OSError:
+        if not os.path.exists(item.info.path):
             skipped.append(t("rp_gone_file", name=name))
-            continue
-        if (stat.st_size != item.info.file_size
-                or stat.st_mtime_ns != item.info.mtime_ns):
+        elif not matches_disk(item.info):
             skipped.append(t("rp_stale_file", name=name))
-            continue
-        fresh.append(item)
+        else:
+            fresh.append(item)
     return fresh, skipped
 
 
-def adopt_new_files(report: Report, jobs: int) -> list:
+def adopt_new_files(report: Report, jobs: int,
+                    paths: Sequence | None = None) -> list:
     """Take in files that appeared under the folder since the last analyze.
 
     `reencode --all` promises every file in the folder, and the report is only
@@ -2577,7 +2590,9 @@ def adopt_new_files(report: Report, jobs: int) -> list:
     the stream itself for the next analyze.
     """
     known = report.by_path()
-    fresh = [p for p in collect_flac_files(report.root) if p not in known]
+    if paths is None:
+        paths = collect_flac_files(report.root)
+    fresh = [p for p in paths if p not in known]
     if not fresh:
         return []
     items = [classify(info) for info in read_all_metadata(fresh, jobs)]
@@ -2762,9 +2777,14 @@ def cmd_find_fake(args) -> int:
     Three lies are looked for - a lossy source, upsampled hi-res and a bit
     depth padded with zeros. None is actionable: a file that was thrown away
     at 128 kbps cannot be repaired, only replaced by a better copy. That is
-    why this stays out of the analyze/reencode/repair chain. It runs on the
-    stored report when there is one, and on the headers alone when there
-    is not. --all also lists what each honest file was cleared on.
+    why this stays out of the analyze/reencode/repair chain. --all also lists
+    what each honest file was cleared on.
+
+    The folder decides which files are looked at, never the report: measuring
+    a file that is no longer there would only produce "too short or too quiet"
+    for every entry of a library that has since been moved. The report is used
+    for what it is good for - keeping the results, and handing back the ones
+    still describing the file on disk.
     """
     report_file = args.report or default_report_path(args.folder)
     try:
@@ -2772,29 +2792,37 @@ def cmd_find_fake(args) -> int:
     except ValueError:
         report = None
 
+    print(t("run_scanning", root=short(args.folder)))
+    paths = collect_flac_files(args.folder)
+    if not paths:
+        print(t("run_none"))
+        return 0
+
     if report:
+        # Files that appeared since the last analyze are taken in, entries
+        # whose file is gone simply do not survive the rebuild.
+        adopt_new_files(report, args.jobs, paths)
+        known = report.by_path()
+        report.items = [known[path] for path in paths]
         # Damaged files are included: analyze failed them on a decode error,
         # but the sampled window is usually far from the damage and a file
         # that lies about its quality is worth knowing about either way.
         # Only an unreadable header leaves nothing to measure.
         targets = [a for a in report.items if not a.unreadable]
-        infos = [a.info for a in targets]
     else:
-        print(t("run_scanning", root=short(args.folder)))
-        paths = collect_flac_files(args.folder)
-        if not paths:
-            print(t("run_none"))
-            return 0
-        infos = [i for i in read_all_metadata(paths, args.jobs) if not i.error]
-        targets = []
+        targets = [Analysis(info=info)
+                   for info in read_all_metadata(paths, args.jobs)
+                   if not info.error]
 
-    if not infos:
+    if not targets:
         print(t("run_none"))
         return 0
 
-    results = run_parallel(t("fake_running", count=len(infos)), infos,
-                           check_fake_source, args.jobs, weight=_by_size,
-                           cpu_bound=True)
+    results = run_parallel(t("fake_running", count=len(targets)),
+                           [a.info for a in targets], check_fake_source,
+                           args.jobs, weight=_by_size, cpu_bound=True)
+    for item, res in zip(targets, results):
+        item.fake = res
     found = [r for r in results if r.suspicious]
 
     print()
@@ -2818,8 +2846,6 @@ def cmd_find_fake(args) -> int:
                     blank=False)
 
     if report:
-        for item, res in zip(targets, results):
-            item.fake = res
         store(report, args)
     return 0
 
