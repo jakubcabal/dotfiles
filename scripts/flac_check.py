@@ -508,8 +508,10 @@ MAX_LEVEL_DRIFT = 3.0
 LEVEL_WINDOW = 60
 
 # Measured throughput per thread (MB/s), for rough run-time estimates only.
-# On 12 cores: deep 832 MB in 2.6 s, encode 832 MB in 5.9 s, fake ~1.5 MB/s.
-DEEP_RATE, ENCODE_RATE, FAKE_RATE = 25, 12, 2
+# On 12 cores: deep 832 MB in 2.6 s, encode 832 MB in 5.9 s. The spectral pass
+# measured 5.2 MB/s per thread on 96 kHz material and 10.3 on 44.1; the lower
+# figure is the one worth promising.
+DEEP_RATE, ENCODE_RATE, FAKE_RATE = 25, 12, 5
 
 #: How many files are worked on at once. Every stage here spends its time in
 #: `flac` or `ffmpeg`, one process per file, so the core count is the answer
@@ -1370,8 +1372,6 @@ LOSSY_CLIFF_TO = 20000       # above this a fall is the natural roll-off
                              # towards CD Nyquist, not a codec
 LOSSY_WINDOW = 4096          # Goertzel window length
 LOSSY_WINDOW_STRIDE = 8      # every Nth window is taken
-LOSSY_SECONDS = 30           # how many seconds of the track are measured
-LOSSY_SKIP = 20              # and from which second (skips a quiet intro)
 LOSSY_FLOOR_DB = -100.0      # below this it is only numerical noise
 
 ULTRA_FROM = 26000           # the ultrasound is sampled from here,
@@ -1412,6 +1412,7 @@ class FakeCheck:
     claimed_rate: int = 0
     real_bits: int = 0                          # if it is below claimed_bits
     claimed_bits: int = 0
+    windows: int = 0                            # how much was listened to
     error: str | None = None                    # a MESSAGES key
 
     @property
@@ -1458,93 +1459,105 @@ def _goertzel(samples: Sequence, rate: int, freq: float) -> float:
     return s1 * s1 + s2 * s2 - coeff * s1 * s2
 
 
-def _decode_slice(info: FlacInfo) -> bytes:
-    """Decode a slice of the track as raw little-endian PCM.
+def _windows(info: FlacInfo):
+    """Every LOSSY_WINDOW-th sample block of the whole track, mono, -1..+1.
+
+    A stream and not a slice. Measuring 30 seconds and calling it the track
+    was a lottery: on this library the depth of the deepest cliff moved by up
+    to 12 dB depending on where the 30 seconds landed, which is most of the
+    margin between the worst honest file and the threshold. The whole track
+    costs almost nothing extra, because only every STRIDE-th window is looked
+    at and this reads only those - the old code converted every sample of the
+    slice and then used one eighth of them.
+
+    Yields (mono window, low bytes seen) so the caller can measure the depth
+    from the same bytes; nothing but one window is ever held in memory.
 
     Bit depth MUST come from the header: files converted from MP3 are often
     24 bit, and reading them as 16 bit would return noise.
     """
-    rate, total = info.sample_rate, info.total_samples
-    start = min(LOSSY_SKIP * rate, max(0, total - LOSSY_SECONDS * rate))
-    # --until past the end makes flac refuse outright, so a track shorter than
-    # LOSSY_SECONDS has to be asked for by its real length, and a file with an
-    # unknown length (total_samples 0) not bounded at all.
-    span = ["--until=" + str(min(total, start + LOSSY_SECONDS * rate))] if total else []
-    return subprocess.run(
+    width = info.bits_per_sample // 8
+    frame = width * info.channels
+    scale = float(1 << (info.bits_per_sample - 1))
+    proc = subprocess.Popen(
         ["flac", "-d", "-c", "-s", "--force-raw-format", "--endian=little",
-         "--sign=signed", f"--skip={start}", *span, "--", info.path],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+         "--sign=signed", "--", info.path],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        gap = LOSSY_WINDOW * (LOSSY_WINDOW_STRIDE - 1) * frame
+        while True:
+            raw = proc.stdout.read(LOSSY_WINDOW * frame)
+            if len(raw) < LOSSY_WINDOW * frame:
+                return
+            mono = []
+            for i in range(LOSSY_WINDOW):
+                off = i * frame
+                total = sum(int.from_bytes(raw[off + c * width:
+                                               off + (c + 1) * width],
+                                           "little", signed=True)
+                            for c in range(info.channels))
+                mono.append(total / info.channels / scale * _BH_WINDOW[i])
+            yield mono, raw
+            if len(proc.stdout.read(gap)) < gap:
+                return
+    finally:
+        proc.stdout.close()
+        proc.wait()
 
 
-def _to_mono(raw: bytes, channels: int, width: int, bits: int) -> list:
-    """Average the channels into one signal in the range -1..+1."""
-    scale = float(1 << (bits - 1))
-    frame = width * channels
-    mono = []
-    for off in range(0, len(raw), frame):
-        total = sum(int.from_bytes(raw[off + c * width: off + (c + 1) * width],
-                                   "little", signed=True) for c in range(channels))
-        mono.append(total / channels / scale)
-    return mono
-
-
-def _effective_bits(raw: bytes, width: int, bits: int) -> int:
-    """How many bits the samples really use, or `bits` if they use them all.
+def _dead_bytes(raw: bytes, width: int, dead: int) -> int:
+    """How many of the low `dead` bytes of every sample are still all zero.
 
     Samples are contiguous little-endian words, so `raw[0::width]` is the low
-    byte of every sample of every channel. All zero means the audio was widened
-    from a shallower depth and the extra bits carry nothing. Only whole bytes
-    are counted - a partial fill (a 20 bit ADC) is honest hardware, not a lie.
+    byte of every sample of every channel. All zero across the whole track
+    means the audio was widened from a shallower depth and the extra bits
+    carry nothing. Only whole bytes are counted - a partial fill (a 20 bit
+    ADC) is honest hardware, not a lie.
     """
-    for dead in range(width - 1, 0, -1):
-        if all(not any(raw[byte::width]) for byte in range(dead)):
-            return bits - dead * 8
-    return bits
+    for byte in range(dead):
+        if any(raw[byte::width]):
+            return byte
+    return dead
 
 
 def check_fake_source(info: FlacInfo) -> FakeCheck:
     """Look for the marks of a lossy source, upsampling and a padded depth."""
     result = FakeCheck(path=info.path, claimed_rate=info.sample_rate,
                        claimed_bits=info.bits_per_sample)
-    rate, channels = info.sample_rate, info.channels
-    width = info.bits_per_sample // 8
-    if not (rate and channels and width):
+    rate, width = info.sample_rate, info.bits_per_sample // 8
+    if not (rate and info.channels and width):
         result.error = "fake_unusable"
         return result
-    try:
-        raw = _decode_slice(info)
-    except OSError:
-        result.error = "fake_unusable"
-        return result
-
-    raw = raw[:len(raw) - len(raw) % (width * channels)]
-    nyquist = rate / 2
-    top = nyquist * 0.95
+    top = rate / 2 * 0.95
     fine = [f for f in range(LOSSY_BAND_FROM, LOSSY_BAND_TO + 1, LOSSY_BAND_STEP)
             if f < top]
     coarse = ([f for f in range(ULTRA_FROM, int(top) + 1, ULTRA_STEP)]
               if rate > ULTRA_MIN_RATE else [])
-    if len(raw) < width * channels * LOSSY_WINDOW * 2 or len(fine) < 3:
+    if len(fine) < 3:
         result.error = "fake_unusable"
         return result
 
-    bits = _effective_bits(raw, width, info.bits_per_sample)
-    if bits < info.bits_per_sample:
-        result.real_bits = bits
-
-    signal = _to_mono(raw, channels, width, info.bits_per_sample)
     energy = {f: 0.0 for f in fine + coarse}
     reference = 0.0
-    for start in range(0, len(signal) - LOSSY_WINDOW,
-                       LOSSY_WINDOW * LOSSY_WINDOW_STRIDE):
-        chunk = [signal[start + i] * _BH_WINDOW[i] for i in range(LOSSY_WINDOW)]
-        reference += _goertzel(chunk, rate, 1000)
-        for f in energy:
-            energy[f] += _goertzel(chunk, rate, f)
-
-    if reference <= 0:
+    dead = width - 1              # low bytes still seen all zero everywhere
+    windows = 0
+    try:
+        for chunk, raw in _windows(info):
+            windows += 1
+            dead = _dead_bytes(raw, width, dead)
+            reference += _goertzel(chunk, rate, 1000)
+            for f in energy:
+                energy[f] += _goertzel(chunk, rate, f)
+    except OSError:
         result.error = "fake_unusable"
         return result
+
+    if windows < 2 or reference <= 0:
+        result.error = "fake_unusable"
+        return result
+    if dead:
+        result.real_bits = info.bits_per_sample - dead * 8
+    result.windows = windows
     result.bands = {f: 10 * math.log10(e / reference + 1e-30)
                     for f, e in energy.items()}
     _find_cliff(result, fine)
