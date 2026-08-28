@@ -100,10 +100,6 @@ carried over into the replacement.
 Whether to rewrite a file is decided PER FILE, never from a folder average,
 see meets_threshold().
 
-`analyze --quiet` and `find-fake --quiet` print nothing while the library is
-clean and exit 1 as soon as it is not, which is the whole interface a cron
-job or a systemd timer needs.
-
 Requires Python 3.8+ and the `flac` tool 1.3+ in PATH (1.4+ for 32 bit
 output). Converting with --sample-rate/--bits also needs `ffmpeg` built with
 libsoxr. No PyPI packages.
@@ -143,20 +139,6 @@ REPORT_VERSION = 2
 LANGUAGES = ("cs", "en")
 DEFAULT_LANGUAGE = "cs"
 _lang = DEFAULT_LANGUAGE
-#: --quiet: no progress and no running commentary, only what was found.
-_quiet = False
-
-
-def set_quiet(on: bool) -> None:
-    global _quiet
-    _quiet = on
-
-
-def say(line: str) -> None:
-    """Print running commentary - what --quiet is there to get rid of. The
-    findings themselves always go through plain print()."""
-    if not _quiet:
-        print(line)
 
 #: key: (Czech, English). Named {placeholders} must match in both.
 def _messages(table: str) -> dict:
@@ -409,7 +391,6 @@ cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak bez
 cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny       | target bit depth (16, 24, 32), otherwise left as it is
 cli_keep_orig    | u převodu odložit originál jako *{suffix} (překódování je bezeztrátové, tam se nezálohuje) | keep the original of a converted file as *{suffix} (a re-encode is lossless, nothing is kept there)
 cli_force        | analyzovat vše znovu, i beze změny od minule               | re-analyse everything, even what has not changed
-cli_quiet        | mlčet, dokud není nález; s nálezem skončit kódem 1 (pro cron) | stay silent until something is found; exit 1 when it is (for cron)
 cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)           | scan the folder and store a report (decodes, slow)
 cli_cmd_show     | znovu vypsat uložený report                                | print the stored report again
 cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé) | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
@@ -2188,7 +2169,7 @@ class Progress:
         self.last_print = 0.0
         self.tty = sys.stderr.isatty()
         self.width = shutil.get_terminal_size((100, 24)).columns
-        if label and not _quiet:
+        if label:
             self._draw(force=True)
 
     @property
@@ -2208,7 +2189,7 @@ class Progress:
         self.started = time.monotonic()
 
     def _draw(self, force: bool = False) -> None:
-        if not self.label or _quiet:
+        if not self.label:
             return
         now = time.monotonic()
         if not force and now - self.last_print < (0.1 if self.tty else QUIET_INTERVAL):
@@ -2233,7 +2214,7 @@ class Progress:
                   file=sys.stderr, flush=True)
 
     def close(self) -> None:
-        if not self.label or _quiet:
+        if not self.label:
             return
         elapsed = duration(time.monotonic() - self.started)
         line = f"  {self.label}  {t('prog_done', elapsed=elapsed)}"
@@ -2706,7 +2687,7 @@ def store(report: Report, args) -> None:
     report.created = time.strftime("%Y-%m-%d %H:%M")
     save_report(report)
     if getattr(args, "verbose_report", True):
-        say(t("rp_saved", path=short(report.path)))
+        print(t("rp_saved", path=short(report.path)))
 
 
 def count_rows(pairs: Sequence, always: bool = False) -> list:
@@ -2807,7 +2788,7 @@ def print_outcome(report: Report, args) -> None:
 
 def cmd_analyze(args) -> int:
     root = args.folder
-    say(t("run_scanning", root=short(root)))
+    print(t("run_scanning", root=short(root)))
     paths = collect_flac_files(root)
     if not paths:
         print(t("run_none"))
@@ -2836,7 +2817,7 @@ def cmd_analyze(args) -> int:
             todo.append(info)
 
     if previous:
-        say("  " + t("rp_reused", count=len(paths) - len(todo), fresh=len(todo)))
+        print("  " + t("rp_reused", count=len(paths) - len(todo), fresh=len(todo)))
 
     readable = [i for i in todo if not i.error]
     if readable:
@@ -2856,18 +2837,12 @@ def cmd_analyze(args) -> int:
 
     report = Report(root=root, flac_version=_dotted(flac_version() or ()),
                     items=items, path=report_file)
-    # --quiet is for a periodic run: a clean library says nothing at all and
-    # the exit code carries the verdict, so cron only writes when it matters.
-    if args.quiet and not has_findings(report):
-        store(report, args)
-        return 0
-
     print()
     print_findings(report, args.all)
     print_table(summary_rows(report))
     store(report, args)
     print_outcome(report, args)
-    return 1 if args.quiet else 0
+    return 0
 
 
 def cmd_show(args) -> int:
@@ -2902,10 +2877,10 @@ def cmd_find_fake(args) -> int:
     except ValueError:
         report = None
 
-    say(t("run_scanning", root=short(args.folder)))
+    print(t("run_scanning", root=short(args.folder)))
     paths = collect_flac_files(args.folder)
     if not paths:
-        say(t("run_none"))
+        print(t("run_none"))
         return 0
 
     if report:
@@ -2925,7 +2900,7 @@ def cmd_find_fake(args) -> int:
                    if not info.error]
 
     if not targets:
-        say(t("run_none"))
+        print(t("run_none"))
         return 0
 
     # A stored result still describes a file that has not moved a byte since,
@@ -2933,8 +2908,8 @@ def cmd_find_fake(args) -> int:
     todo = [a for a in targets
             if args.force or not (a.fake and matches_disk(a.info))]
     if report and not args.force:
-        say("  " + t("rp_reused", count=len(targets) - len(todo),
-                     fresh=len(todo)))
+        print("  " + t("rp_reused", count=len(targets) - len(todo),
+                       fresh=len(todo)))
 
     if todo:
         measured = run_parallel(t("fake_running", count=len(todo)),
@@ -2944,11 +2919,6 @@ def cmd_find_fake(args) -> int:
             item.fake = res
     results = [a.fake for a in targets if a.fake]
     found = [r for r in results if r.suspicious]
-
-    if args.quiet and not found:
-        if report:
-            store(report, args)
-        return 0
 
     print()
     if found:
@@ -2972,7 +2942,7 @@ def cmd_find_fake(args) -> int:
 
     if report:
         store(report, args)
-    return 1 if args.quiet else 0
+    return 0
 
 
 def run_write_command(args, report: Report, targets: Sequence, nothing: str,
@@ -3326,7 +3296,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(analyze)
     analyze.add_argument("--all", action="store_true", help=t("cli_all"))
     analyze.add_argument("--force", action="store_true", help=t("cli_force"))
-    analyze.add_argument("--quiet", action="store_true", help=t("cli_quiet"))
 
     show = subparsers.add_parser("show", help=t("cli_cmd_show"))
     _add_common(show, jobs=False)
@@ -3337,7 +3306,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(find_fake)
     find_fake.add_argument("--all", action="store_true", help=t("cli_all"))
     find_fake.add_argument("--force", action="store_true", help=t("cli_force"))
-    find_fake.add_argument("--quiet", action="store_true", help=t("cli_quiet"))
 
     reencode = subparsers.add_parser("reencode", help=t("cli_cmd_reencode"))
     _add_common(reencode)
@@ -3393,7 +3361,6 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     set_language(args.lang or detect_language())
-    set_quiet(getattr(args, "quiet", False))
     args.jobs = max(1, args.jobs)
     args.folder = os.path.abspath(os.path.expanduser(args.folder))
 
