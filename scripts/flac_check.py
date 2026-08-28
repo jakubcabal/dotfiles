@@ -1329,6 +1329,16 @@ class FakeCheck:
 
     @property
     def suspicious(self) -> bool:
+        """Does the file lie? A check that could not be made accuses nobody.
+
+        The depth is read from the samples before the spectrum is measured, so
+        a track too silent to have a 1 kHz reference reaches the error with
+        real_bits already set - and on an all-zero track that would "prove" a
+        padded 8 bit. Such a file belongs in the "could not be measured" group
+        and nowhere else.
+        """
+        if self.error:
+            return False
         return self.lossy_source or self.upsampled or self.padded_depth
 
     @property
