@@ -78,8 +78,9 @@ the script that is not lossless: the audio is deliberately a different one
 afterwards, so the original MD5 cannot match. What is verified instead is that
 the file really has the requested format, is as long as the change of rate
 implies, and that its header MD5 matches the audio it decodes to - which is
-what proves the encoder wrote down exactly what the resampler produced. No
-copy of the original is kept, and the confirmation says so before anything is
+what proves the encoder wrote down exactly what the resampler produced. The
+original is replaced like any other, unless --keep-original puts it aside as
+<name>.orig.flac; either way the confirmation says which, before anything is
 written.
 
 `repair` handles three defects. Returning a file into the subset and
@@ -255,12 +256,14 @@ rc_all_new      | {count} přibylo od poslední analýzy                        
 rc_conv_to      | převod na {format}, přepočítá soxr s ditherem shibata      | conversion to {format}, recomputed by soxr with shibata dither
 rc_conv_num     | {count} se převede, zbytek se jen překóduje                | {count} will be converted, the rest are only re-encoded
 rc_conv_risk    | Zvuk se PŘEPOČÍTÁ - není to bezeztrátové a originál nikde nezůstane. | The audio is RECOMPUTED - this is not lossless and no copy of the original is kept.
+rc_conv_kept    | Zvuk se PŘEPOČÍTÁ, ale převedené soubory zůstanou i v originále jako *{suffix}. | The audio is RECOMPUTED, but every converted file is also kept as it was, as *{suffix}.
 rc_conv_meta    | Tagy i obal zůstanou, cuesheet ne: odkazuje na vzorky, a ty se mění. | Tags and cover art are kept, the cuesheet is not: it indexes samples, and those change.
 rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})              | {oldfmt} → {newfmt}, {old} → {new} ({change})
 rc_conv_would   | převedl by se na {newfmt} ({change}), soubor nezměněn      | would be converted to {newfmt} ({change}), file unchanged
 rc_conv_rate    | {khz:g} kHz (hloubka beze změny)                           | {khz:g} kHz (depth left as it is)
 rc_conv_bits    | {bits} bit (frekvence beze změny)                          | {bits} bit (rate left as it is)
 rc_conv_bad     | {rate} Hz se do FLACu nezapíše, zvol běžnou frekvenci      | FLAC cannot store {rate} Hz, pick a common rate
+rc_conv_exists  | {name} už existuje, originál by se ztratil                 | {name} already exists, the original would be lost
 rc_settings     | nastavení: flac {opts}                                     | settings: flac {opts}
 rc_promise      | Zvuk zůstane bit po bitu stejný (ověřuje se MD5), tagy a obal také. | The audio stays bit-for-bit identical (MD5 checked), so do tags and cover art.
 rc_not_tty      | Vstup není terminál - pro neinteraktivní běh použij --yes. | Input is not a terminal - use --yes for non-interactive runs.
@@ -357,6 +360,7 @@ cli_yes          | neptat se na potvrzení                                     |
 cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 0 = přepsat vždy) | smallest saving in %% per file (default: 0 = always rewrite)
 cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny | target sample rate in Hz (e.g. 48000), otherwise left as it is
 cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny       | target bit depth (16, 24, 32), otherwise left as it is
+cli_keep_orig    | u převodu odložit originál jako *{suffix} (překódování je bezeztrátové, tam se nezálohuje) | keep the original of a converted file as *{suffix} (a re-encode is lossless, nothing is kept there)
 cli_force        | analyzovat vše znovu, i beze změny od minule               | re-analyse everything, even what has not changed
 cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)           | scan the folder and store a report (decodes, slow)
 cli_cmd_show     | znovu vypsat uložený report                                | print the stored report again
@@ -458,7 +462,8 @@ STEREO_UNKNOWN = "?"
 MD5_UNSET = b"\x00" * 16       # an MD5 the encoder never filled in
 CHUNK = 1 << 16
 
-#: Suffix for the untouched original kept aside by `repair`.
+#: Suffix for the untouched original kept aside by `repair`, and by
+#: `reencode --keep-original`.
 ORIG_SUFFIX = ".orig.flac"
 
 
@@ -1130,7 +1135,7 @@ def assert_converted(original: FlacInfo, new_path: str, rate: int, bits: int,
 
 
 def convert_file(info: FlacInfo, effort: str, rate: int, bits: int,
-                 dry_run: bool) -> Outcome:
+                 dry_run: bool, keep_original: bool = False) -> Outcome:
     """Resample and requantise one file in place.
 
     ffmpeg only moves the samples to the wanted rate and depth and passes them
@@ -1139,11 +1144,24 @@ def convert_file(info: FlacInfo, effort: str, rate: int, bits: int,
     `-vn` keeps the cover art out of that pipe - handed to ffmpeg as a video
     stream it would be re-encoded, and a broken one fails the whole run.
 
-    This is the one write that is not lossless, so the original is gone once it
-    succeeds - which is what the confirmation says before any of this starts.
+    This is the one write that is not lossless, so unless `keep_original` puts
+    the file aside as <name>.orig.flac, it is gone once this succeeds - which
+    is what the confirmation says before any of this starts. An existing backup
+    is never overwritten, otherwise a second run would replace the true
+    original with an already converted one.
     """
     path = info.path
     old_size = os.path.getsize(path)
+    backup = os.path.splitext(path)[0] + ORIG_SUFFIX if keep_original else ""
+    result = Outcome(info, Kind.CONVERT, Status.FAILED, old_size,
+                     rate=rate, bits=bits, backup_path=backup)
+    # Checked in a dry run too: a run that would fail has to say so beforehand.
+    # Worded apart from repair's: this one is printed with "- original kept"
+    # after it, and "skipping - original kept" would say the same thing twice.
+    if backup and os.path.exists(backup):
+        return _failed(result, t("rc_conv_exists",
+                                 name=os.path.basename(backup)))
+
     expected = round(info.total_samples * rate / info.sample_rate)
     tmp = os.path.join(os.path.dirname(path) or ".",
                        f".{os.path.basename(path)}.convert.tmp")
@@ -1183,22 +1201,31 @@ def convert_file(info: FlacInfo, effort: str, rate: int, bits: int,
         assert_converted(info, tmp, rate, bits, expected)
         new_size = os.path.getsize(tmp)
 
-        if not dry_run:
-            _copy_owner_and_times(path, tmp)
-            os.replace(tmp, path)   # atomic, the original never disappears
-        else:
+        result.new_size = new_size
+        if dry_run:
             os.remove(tmp)
-        return Outcome(info, Kind.CONVERT,
-                       Status.DRY_RUN if dry_run else Status.DONE,
-                       old_size, new_size, rate, bits)
+            result.status = Status.DRY_RUN
+            return result
+
+        _copy_owner_and_times(path, tmp)
+        if backup:
+            os.rename(path, backup)     # same directory, so atomic
+            try:
+                os.replace(tmp, path)
+            except OSError:
+                os.rename(backup, path)  # put the original back
+                raise
+        else:
+            os.replace(tmp, path)   # atomic, the original never disappears
+        result.status = Status.DONE
+        return result
 
     except (OSError, RuntimeError, ValueError) as e:
         try:
             os.remove(tmp)
         except OSError:
             pass
-        return Outcome(info, Kind.CONVERT, Status.FAILED, old_size,
-                       rate=rate, bits=bits, error=str(e))
+        return _failed(result, str(e))
 
 
 # --------------------------------------------------------------------------
@@ -2137,8 +2164,9 @@ class Progress:
 
 def collect_flac_files(root: str) -> list:
     """Every .flac under `root`, sorted. Symlinked directories are not
-    followed, and the backups `repair` leaves behind are skipped - they are
-    damaged by definition and would be reported forever."""
+    followed, and the originals put aside by `repair` and `reencode` are
+    skipped - they are superseded by definition and would otherwise be
+    reported, re-encoded and converted forever."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
@@ -2851,7 +2879,8 @@ def cmd_reencode(args) -> int:
     --sample-rate and --bits break that promise on purpose: a file that is not
     in the wanted format goes through ffmpeg instead, comes back as different
     audio, and --min-saving no longer has a say - the point is the format, not
-    the size. Everything already in the wanted format is re-encoded as always.
+    the size. Everything already in the wanted format is re-encoded as always,
+    and --keep-original therefore puts aside only what was really converted.
     """
     report = require_report(args)
     if report is None:
@@ -2894,8 +2923,12 @@ def cmd_reencode(args) -> int:
         lines.append(t("rc_settings", opts=" ".join(EFFORT_PRESETS[args.effort])))
         # The usual promise is the opposite of what a conversion does, so the
         # two are never printed together.
-        lines += [t("rc_conv_risk"), t("rc_conv_meta")] if turning \
-            else [t("rc_promise")]
+        if not turning:
+            lines.append(t("rc_promise"))
+        else:
+            lines += [t("rc_conv_kept", suffix=ORIG_SUFFIX)
+                      if args.keep_original else t("rc_conv_risk"),
+                      t("rc_conv_meta")]
         return lines[:1] + ["  " + line for line in lines[1:]]
 
     def summary(results: Sequence) -> list:
@@ -2924,7 +2957,7 @@ def cmd_reencode(args) -> int:
     def worker(a: Analysis) -> Outcome:
         if convert and needs_conversion(a.info, args):
             return convert_file(a.info, args.effort, *target_format(a.info, args),
-                                args.dry_run)
+                                args.dry_run, args.keep_original)
         return recompress_file(a.info, args.effort, args.min_saving, args.dry_run)
 
     if args.all:
@@ -3063,6 +3096,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help=t("cli_sample_rate"))
     reencode.add_argument("--bits", type=int, choices=sorted(RAW_FORMATS),
                           help=t("cli_bits"))
+    reencode.add_argument("--keep-original", action="store_true",
+                          help=t("cli_keep_orig", suffix=ORIG_SUFFIX))
 
     repair = subparsers.add_parser("repair",
                                    help=t("cli_cmd_repair", suffix=ORIG_SUFFIX))
