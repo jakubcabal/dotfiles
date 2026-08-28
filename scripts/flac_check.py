@@ -15,6 +15,7 @@ happens exactly once.
     flac_check.py reencode  FOLDER     rewrite weakly compressed files
                                        (--sample-rate/--bits also convert)
     flac_check.py repair    FOLDER     fix subset, headers, damaged audio
+    flac_check.py drop-originals FOLDER   delete the *.orig.flac put aside
 
 WHAT CAN BE DETECTED, AND HOW RELIABLY
 The compression level (-0..-8) is not stored in a FLAC file, it can only be
@@ -300,6 +301,18 @@ rp_gone_file   | {name}: už neexistuje, přeskakuji                          | 
 rp_stale_count | Přeskočeno {count} (změněno od analýzy) - spusť analyze znovu. | Skipped {count} (changed since the analysis) - run analyze again.
 rp_reused      | beze změny od minule: {count}, znovu analyzuji {fresh}     | unchanged since last time: {count}, re-analysing {fresh}
 
+# --- dropping the originals put aside ---------------------------------
+drop_none      | Žádné odložené originály (*{suffix}) tu nejsou.             | There are no originals put aside (*{suffix}) here.
+drop_confirm   | Chystám se SMAZAT {count} ({total}).                        | About to DELETE {count} ({total}).
+drop_what      | odložené originály *{suffix}, jejichž náhrada je na místě   | originals put aside as *{suffix}, whose replacement is in place
+drop_final     | Zpátky už se z nich nic nevezme.                            | Nothing can be taken back from them afterwards.
+drop_orphan    | Bez náhrady, proto ponecháno ({count}) - je to poslední kopie toho zvuku: | Kept because nothing replaced them ({count}) - they are the last copy of that audio:
+drop_failed    | {name}: {error}                                             | {name}: {error}
+drop_failed_h  | Nepodařilo se smazat ({count}):                             | Could not be deleted ({count}):
+drop_done      | Smazáno                                                     | Deleted
+drop_would     | Smazalo by se                                               | Would be deleted
+drop_freed     | Uvolněno                                                    | Freed
+
 # --- progress and run -------------------------------------------------
 run_scanning    | Prohledávám {root}          | Scanning {root}
 run_none        | Žádné .flac soubory.        | No .flac files found.
@@ -383,6 +396,7 @@ cli_cmd_show     | znovu vypsat uložený report                                
 cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé) | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
 cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou) | re-encode weakly compressed files in place (lossless, tags kept)
 cli_cmd_repair   | opravit vady: subset, hlavička, poškozený zvuk (originál → *{suffix}) | fix defects: subset, header, damaged audio (original → *{suffix})
+cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu | delete the originals put aside as *{suffix} once their replacement is in place
 """)
 
 
@@ -2229,6 +2243,22 @@ def collect_flac_files(root: str) -> list:
     return found
 
 
+def collect_originals(root: str) -> list:
+    """Every original put aside under `root`, sorted - exactly what
+    collect_flac_files deliberately leaves out."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        found += [os.path.join(dirpath, n) for n in sorted(filenames)
+                  if n.lower().endswith(ORIG_SUFFIX)]
+    return found
+
+
+def replaced_file(backup: str) -> str:
+    """The file an original was put aside for."""
+    return backup[:-len(ORIG_SUFFIX)] + ".flac"
+
+
 def run_parallel(label: str, items: Sequence, worker: Callable, jobs: int,
                  weight: Callable | None = None, cpu_bound: bool = False) -> list:
     """Run `worker` over the items in parallel, reporting progress.
@@ -3178,8 +3208,62 @@ def cmd_repair(args) -> int:
 # Command line
 # --------------------------------------------------------------------------
 
+def cmd_drop_originals(args) -> int:
+    """Delete the originals `repair` and `reencode --keep-original` put aside.
+
+    Only where the file that replaced one is really there. Without it the
+    backup is the last copy of that audio, and throwing it away is the one
+    thing this script must never do - so those are counted, named and kept.
+    """
+    originals = collect_originals(args.folder)
+    if not originals:
+        print(t("drop_none", suffix=ORIG_SUFFIX))
+        return 0
+
+    drop, orphans = [], []
+    for path in originals:
+        (drop if os.path.exists(replaced_file(path)) else orphans).append(path)
+
+    if orphans:
+        print_group(t("drop_orphan", count=files(len(orphans))),
+                    [(rel(path, args.folder), []) for path in orphans])
+    if not drop:
+        return 0
+
+    total = sum(os.path.getsize(path) for path in drop)
+    print(t("drop_confirm", count=files(len(drop)), total=human(total)))
+    print("  " + t("drop_what", suffix=ORIG_SUFFIX))
+    print("  " + t("drop_final"))
+    for path in drop:
+        print(f"   {rel(path, args.folder)}")
+    if args.dry_run:
+        print_table([(t("drop_would"), len(drop)), (t("drop_freed"), human(total))])
+        print_advice([t("adv_was_dry")])
+        return 0
+    if not (args.yes or ask_yes_no()):
+        print(t("rc_cancelled"))
+        return 1
+
+    freed, failed = 0, []
+    for path in drop:
+        try:
+            size = os.path.getsize(path)
+            os.remove(path)
+            freed += size
+        except OSError as e:
+            failed.append((t("drop_failed", name=rel(path, args.folder),
+                             error=str(e)), []))
+    print()
+    if failed:
+        print_group(t("drop_failed_h", count=files(len(failed))), failed)
+    print_table([(t("drop_done"), len(drop) - len(failed)),
+                 (t("drop_freed"), human(freed))])
+    return 0
+
+
 COMMANDS = {"analyze": cmd_analyze, "show": cmd_show, "find-fake": cmd_find_fake,
-            "reencode": cmd_reencode, "repair": cmd_repair}
+            "reencode": cmd_reencode, "repair": cmd_repair,
+            "drop-originals": cmd_drop_originals}
 NEEDS_FLAC = {"analyze", "find-fake", "reencode", "repair"}
 
 
@@ -3241,6 +3325,16 @@ def build_parser() -> argparse.ArgumentParser:
                                    help=t("cli_cmd_repair", suffix=ORIG_SUFFIX))
     _add_common(repair)
     _add_write_options(repair)
+
+    # No report and no flac: this one only removes files the other two left
+    # behind, so it takes neither --jobs nor --report.
+    drop = subparsers.add_parser("drop-originals",
+                                 help=t("cli_cmd_drop", suffix=ORIG_SUFFIX))
+    drop.add_argument("folder", help=t("cli_folder"))
+    drop.add_argument("--lang", choices=LANGUAGES, help=t("cli_lang"))
+    drop.add_argument("--dry-run", action="store_true", help=t("cli_dry_run"))
+    drop.add_argument("-y", "--yes", action="store_true", help=t("cli_yes"))
+    drop.set_defaults(jobs=1, report=None)
     return parser
 
 
