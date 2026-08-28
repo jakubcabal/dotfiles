@@ -195,8 +195,9 @@ err_md5_differs | MD5 se liší - překódování NEBYLO bezeztrátové | MD5 di
 err_flac_t      | flac -t neprošel: {detail}                    | flac -t failed: {detail}
 
 # --- conversion check --------------------------------------------------
-err_samples     | převod vrátil {new} vzorků místo {old}        | the conversion returned {new} samples instead of {old}
-err_md5_content | MD5 v hlavičce nesedí na zvuk v souboru       | the MD5 in the header does not match the audio in the file
+err_samples     | převod vrátil {new} vzorků místo {old}               | the conversion returned {new} samples instead of {old}
+err_md5_content | MD5 v hlavičce nesedí na zvuk v souboru              | the MD5 in the header does not match the audio in the file
+err_level       | hlasitost se posunula o {drift} dB, to není originál | the loudness moved by {drift} dB, that is not the source
 
 # --- severity and labels ----------------------------------------------
 sev_ok   | v pořádku                    | fine
@@ -484,6 +485,13 @@ ENCODE_OPTS = ["-8"]
 RAW_FORMATS = {16: "s16le", 24: "s24le", 32: "s32le"}
 #: flac 1.4 was the first that could encode 32 bit.
 MIN_FLAC_32 = (1, 4, 0)
+
+#: How far the loudness of a conversion may drift from its source, in dB,
+#: before the result is thrown away. Resampling moves it by a fraction of a
+#: dB; the ffmpeg dither fault this guard was written for moved it by 26.
+MAX_LEVEL_DRIFT = 3.0
+#: Seconds of audio the loudness check listens to at each end of the pipe.
+LEVEL_WINDOW = 60
 
 # Measured throughput per thread (MB/s), for rough run-time estimates only.
 # On 12 cores: deep 832 MB in 2.6 s, encode 832 MB in 5.9 s, fake ~1.5 MB/s.
@@ -1179,6 +1187,29 @@ def recompress_file(info: FlacInfo, min_saving_pct: float | None,
         return Outcome(info, kind, Status.FAILED, old_size, error=str(e))
 
 
+def audio_levels(path: str) -> tuple | None:
+    """Peak and RMS of the start of a file, in dBFS, or None if unreadable.
+
+    A window and not the whole file, because this is a sanity check and not a
+    measurement: anything that wrecks a stream wrecks its first minute too,
+    and a full pass would cost about as much as the conversion itself. Digital
+    silence reports -inf, which no number can be compared against, so that
+    reads as None too and the check simply does not apply.
+    """
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostdin", "-vn",
+             "-t", str(LEVEL_WINDOW), "-i", path,
+             "-af", "astats=measure_perchannel=none", "-f", "null", "-"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = out.stderr.decode("utf-8", "replace")
+    found = [re.search(rf"{name} level dB:\s*(-?\d+(?:\.\d+)?)", text)
+             for name in ("Peak", "RMS")]
+    return None if not all(found) else tuple(float(m.group(1)) for m in found)
+
+
 def assert_converted(original: FlacInfo, new_path: str, rate: int, bits: int,
                      expected_samples: int) -> None:
     """Verify a converted file is the one that was asked for, and intact.
@@ -1208,6 +1239,21 @@ def assert_converted(original: FlacInfo, new_path: str, rate: int, bits: int,
     if new.md5 != raw_audio_md5(new_path):
         raise RuntimeError(t("err_md5_content"))
     flac_test(new_path)
+
+    # Everything above would pass just as happily on a stream the resampler
+    # wrecked: the header would be right, the length right, the MD5 honestly
+    # self-consistent. Nothing so far has compared the audio to the audio it
+    # came from - and once, an ffmpeg dither fault quietly turned a whole
+    # album into clipping. Loudness is a coarse thing to compare, but that is
+    # the point: resampling barely moves it, and a fault of that kind moves it
+    # enormously. The peak is allowed to fall - taking the ultrasound out
+    # takes energy with it - so only a rise counts against it.
+    old_level, new_level = audio_levels(original.path), audio_levels(new_path)
+    if old_level and new_level:
+        drift = max(new_level[0] - old_level[0],
+                    abs(new_level[1] - old_level[1]))
+        if drift > MAX_LEVEL_DRIFT:
+            raise RuntimeError(t("err_level", drift=f"{drift:.1f}"))
 
 
 def convert_file(info: FlacInfo, rate: int, bits: int,
