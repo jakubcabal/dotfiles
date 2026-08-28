@@ -15,6 +15,7 @@ happens exactly once.
     flac_check.py reencode  FOLDER     rewrite weakly compressed files
                                        (--sample-rate/--bits also convert)
     flac_check.py repair    FOLDER     fix subset, headers, damaged audio
+    flac_check.py revert-original FOLDER  put the *.orig.flac back in place
     flac_check.py drop-originals FOLDER   delete the *.orig.flac put aside
 
 WHAT CAN BE DETECTED, AND HOW RELIABLY
@@ -100,8 +101,10 @@ salvaging - puts the original aside as <name>.orig.flac first, and one that
 does not need to, because it is verified bit for bit, simply replaces the
 file. `--no-keep-original` turns the first half off on both commands, and the
 confirmation says which of the two is about to happen. An original already put
-aside is never overwritten, so a second run cannot bury the real one; when the
-new files have proved themselves, `drop-originals` clears them out.
+aside is never overwritten, so a second run cannot bury the real one. When the
+new files have proved themselves, `drop-originals` clears the originals out;
+when they have not, `revert-original` moves them back over the replacements
+and the folder is as it was.
 
 Requires Python 3.8+ and the `flac` tool 1.3+ in PATH (1.4+ for 32 bit
 output). Converting with --sample-rate/--bits also needs `ffmpeg` built with
@@ -319,6 +322,19 @@ drop_done     | Smazáno                                                        
 drop_would    | Smazalo by se                                                             | Would be deleted
 drop_freed    | Uvolněno                                                                  | Freed
 
+# --- putting the originals back ---------------------------------------
+rev_none     | Žádné odložené originály (*{suffix}) tu nejsou, není co vracet. | There are no originals put aside (*{suffix}) here, nothing to revert.
+rev_confirm  | Chystám se VRÁTIT {count}, na disku {delta}.                    | About to REVERT {count}, {delta} on disk.
+rev_what     | originál *{suffix} se přesune zpět na své místo                 | the original *{suffix} moves back to its place
+rev_final    | Současná verze se zahodí, ta už se nevrátí.                     | The current version is thrown away and does not come back.
+rev_change   | {old} → {new}                                                   | {old} → {new}
+rev_gone     | na místě nic není, originál jen dostane zpět své jméno          | nothing is in its place, the original only gets its name back
+rev_broken_h | Nečitelný originál, proto ponecháno ({count}):                  | Kept because the original cannot be read ({count}):
+rev_error    | {name}: {error}                                                 | {name}: {error}
+rev_failed_h | Nepodařilo se vrátit ({count}):                                 | Could not be reverted ({count}):
+rev_done     | Vráceno                                                         | Reverted
+rev_would    | Vrátilo by se                                                   | Would be reverted
+
 # --- progress and run -------------------------------------------------
 run_scanning    | Prohledávám {root}          | Scanning {root}
 run_none        | Žádné .flac soubory.        | No .flac files found.
@@ -362,6 +378,7 @@ adv_reanalyze   | Report je aktualizovaný; pro plný obraz spusť analyze znovu
 adv_stale       | {cmd}  ({count} z reportu chybí na disku)                                             | {cmd}  ({count} of the report are no longer on disk)
 adv_partial     | {cmd}  ({count} zatím bez hloubkové analýzy)                                          | {cmd}  ({count} not deeply analysed yet)
 adv_no_md5      | {cmd}  ({count} bez MD5, překódování ho doplní)                                       | {cmd}  ({count} without an MD5, re-encoding writes one)
+adv_reverted    | {cmd}  (vrácené soubory už report nepopisuje)                                         | {cmd}  (the report no longer describes the reverted files)
 
 # --- files that lie about their quality --------------------------------
 fake_unusable  | stopa je příliš krátká nebo tichá                                                                                | the track is too short or too quiet
@@ -379,26 +396,27 @@ fake_ok_bits   | vzorky využívají všech {bits} bitů                        
 fake_skipped   | Nešlo změřit ({count}): {reason}                                                                                 | Could not be measured ({count}): {reason}
 
 # --- command line help ------------------------------------------------
-cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.                  | Checks a FLAC library: compression, subset, damage.
-cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.               | Run analyze first, then reencode or repair as needed.
-cli_command      | příkaz                                                                | command
-cli_folder       | složka s hudbou (rekurzivně)                                          | music folder (recursive)
-cli_lang         | jazyk výstupu (výchozí: podle prostředí)                              | output language (default: from the environment)
-cli_report       | kam uložit report (výchozí: {path})                                   | where to keep the report (default: {path})
-cli_all          | vypsat i soubory, které jsou v pořádku                                | list the files that are fine as well
-cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované                 | re-encode every file, not just the weakly compressed ones
-cli_dry_run      | nic nezapisovat, jen spočítat výsledek                                | write nothing, only compute the outcome
-cli_yes          | neptat se na potvrzení                                                | do not ask for confirmation
-cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny      | target sample rate in Hz (e.g. 48000), otherwise left as it is
-cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny                  | target bit depth (16, 24, 32), otherwise left as it is
-cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk          | do not put the original aside as *{suffix}, not even where the audio changes
-cli_force        | analyzovat vše znovu, i beze změny od minule                          | re-analyse everything, even what has not changed
-cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)                      | scan the folder and store a report (decodes, slow)
-cli_cmd_show     | znovu vypsat uložený report                                           | print the stored report again
-cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé)    | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
-cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou)  | re-encode weakly compressed files in place (lossless, tags kept)
-cli_cmd_repair   | opravit vady: subset, hlavička, poškozený zvuk (originál → *{suffix}) | fix defects: subset, header, damaged audio (original → *{suffix})
-cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu            | delete the originals put aside as *{suffix} once their replacement is in place
+cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.                       | Checks a FLAC library: compression, subset, damage.
+cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.                    | Run analyze first, then reencode or repair as needed.
+cli_command      | příkaz                                                                     | command
+cli_folder       | složka s hudbou (rekurzivně)                                               | music folder (recursive)
+cli_lang         | jazyk výstupu (výchozí: podle prostředí)                                   | output language (default: from the environment)
+cli_report       | kam uložit report (výchozí: {path})                                        | where to keep the report (default: {path})
+cli_all          | vypsat i soubory, které jsou v pořádku                                     | list the files that are fine as well
+cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované                      | re-encode every file, not just the weakly compressed ones
+cli_dry_run      | nic nezapisovat, jen spočítat výsledek                                     | write nothing, only compute the outcome
+cli_yes          | neptat se na potvrzení                                                     | do not ask for confirmation
+cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny           | target sample rate in Hz (e.g. 48000), otherwise left as it is
+cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny                       | target bit depth (16, 24, 32), otherwise left as it is
+cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk               | do not put the original aside as *{suffix}, not even where the audio changes
+cli_force        | analyzovat vše znovu, i beze změny od minule                               | re-analyse everything, even what has not changed
+cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)                           | scan the folder and store a report (decodes, slow)
+cli_cmd_show     | znovu vypsat uložený report                                                | print the stored report again
+cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé)         | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
+cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou)       | re-encode weakly compressed files in place (lossless, tags kept)
+cli_cmd_repair   | opravit vady: subset, hlavička, poškozený zvuk (originál → *{suffix})      | fix defects: subset, header, damaged audio (original → *{suffix})
+cli_cmd_revert   | vrátit soubory z odložených originálů *{suffix} (současná verze se zahodí) | restore the files from the originals put aside as *{suffix} (the current version is thrown away)
+cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu                 | delete the originals put aside as *{suffix} once their replacement is in place
 """)
 
 
@@ -2168,6 +2186,14 @@ def human(n: float) -> str:
     return f"{size:.1f} GB"
 
 
+def size_of(path: str) -> int:
+    """Bytes on disk, 0 for a file that is not there."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
 def audio_format(rate: int, bits: int) -> str:
     """A stream format the way the whole script says it: '44.1 kHz/16 bit'."""
     return f"{rate / 1000:g} kHz/{bits} bit"
@@ -3288,6 +3314,96 @@ def cmd_repair(args) -> int:
 # Command line
 # --------------------------------------------------------------------------
 
+def cmd_revert_original(args) -> int:
+    """Put the originals back, undoing what `reencode` or `repair` wrote.
+
+    The mirror image of `drop-originals`, including where the two disagree.
+    That one keeps an original nothing replaced, because it is the last copy
+    of that audio; this one restores it there too, because an original with
+    nothing in its place is not something to leave alone, it is audio waiting
+    to get its name back.
+
+    Each file is put back by a single os.replace, so the name is never
+    momentarily empty however the run ends. The header of every original is
+    read first: a backup that is not a readable FLAC is no reason at all to
+    throw a working file away.
+    """
+    originals = collect_originals(args.folder)
+    if not originals:
+        print(t("rev_none", suffix=ORIG_SUFFIX))
+        return 0
+
+    revert, broken = [], []
+    for path in originals:
+        try:
+            revert.append((path, read_flac_metadata(path)))
+        except (OSError, ValueError) as e:
+            broken.append((t("rev_error", name=rel(path, args.folder),
+                             error=str(e)), []))
+    if broken:
+        print_group(t("rev_broken_h", count=files(len(broken))), broken)
+    if not revert:
+        return 0
+
+    rows, delta = [], 0
+    for path, info in revert:
+        target = replaced_file(path)
+        # What the revert costs, not what it brings back: going home to a
+        # 176.4 kHz original from a 48 kHz file wants the space three times
+        # over, and that is worth knowing before the disk finds out.
+        delta += os.path.getsize(path) - size_of(target)
+        # What is about to be lost, said in the same words reencode used to
+        # promise it. A file that is there but unreadable gets no line: the
+        # header above already says it is going away, and inventing a format
+        # for it would be worse than silence.
+        detail = []
+        if not os.path.exists(target):
+            detail = [t("rev_gone")]
+        else:
+            try:
+                now = read_flac_metadata(target)
+                detail = [t("rev_change",
+                            old=audio_format(now.sample_rate, now.bits_per_sample),
+                            new=audio_format(info.sample_rate, info.bits_per_sample))]
+            except (OSError, ValueError):
+                pass
+        rows.append((rel(target, args.folder), detail))
+
+    print(t("rev_confirm", count=files(len(revert)),
+            delta=("+" if delta >= 0 else "-") + human(abs(delta))))
+    print("  " + t("rev_what", suffix=ORIG_SUFFIX))
+    print("  " + t("rev_final"))
+    for name, detail in rows:
+        print(f"   {name}")
+        for line in detail:
+            print(f"      {line}")
+    if args.dry_run:
+        print_table([(t("rev_would"), len(revert))])
+        print_advice([t("adv_was_dry")])
+        return 0
+    if not (args.yes or ask_yes_no()):
+        print(t("rc_cancelled"))
+        return 1
+
+    done, failed = 0, []
+    for path, _ in revert:
+        try:
+            os.replace(path, replaced_file(path))
+            done += 1
+        except OSError as e:
+            failed.append((t("rev_error", name=rel(path, args.folder),
+                             error=str(e)), []))
+    print()
+    if failed:
+        print_group(t("rev_failed_h", count=files(len(failed))), failed)
+    print_table([(t("rev_done"), done)])
+    # Every restored file is a different file under a name the report still
+    # describes, so the report is now wrong about exactly the ones that moved.
+    print_advice([t("adv_reverted", cmd=command_hint("analyze", args.folder))]
+                 if done else [])
+    return 0
+
+
 def cmd_drop_originals(args) -> int:
     """Delete the originals `repair` and `reencode --keep-original` put aside.
 
@@ -3343,6 +3459,7 @@ def cmd_drop_originals(args) -> int:
 
 COMMANDS = {"analyze": cmd_analyze, "show": cmd_show, "find-fake": cmd_find_fake,
             "reencode": cmd_reencode, "repair": cmd_repair,
+            "revert-original": cmd_revert_original,
             "drop-originals": cmd_drop_originals}
 NEEDS_FLAC = {"analyze", "find-fake", "reencode", "repair"}
 
@@ -3364,6 +3481,22 @@ def _add_write_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-keep-original", dest="keep_original",
                         action="store_false",
                         help=t("cli_no_keep_orig", suffix=ORIG_SUFFIX))
+
+
+def _add_originals_command(subparsers, name: str, help_text: str) -> None:
+    """The two commands that only shuffle the originals about.
+
+    Neither reads the report, neither runs `flac`, and neither analyses
+    anything - they take a folder, say what they are about to do to files that
+    are already on disk, and ask. So they share a command line of their own
+    rather than the one the analysing commands use.
+    """
+    parser = subparsers.add_parser(name, help=help_text)
+    parser.add_argument("folder", help=t("cli_folder"))
+    parser.add_argument("--lang", choices=LANGUAGES, help=t("cli_lang"))
+    parser.add_argument("--dry-run", action="store_true", help=t("cli_dry_run"))
+    parser.add_argument("-y", "--yes", action="store_true", help=t("cli_yes"))
+    parser.set_defaults(report=None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3402,15 +3535,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(repair)
     _add_write_options(repair)
 
-    # No report and no flac: this one only removes files the other two left
-    # behind, so it takes no --report either.
-    drop = subparsers.add_parser("drop-originals",
-                                 help=t("cli_cmd_drop", suffix=ORIG_SUFFIX))
-    drop.add_argument("folder", help=t("cli_folder"))
-    drop.add_argument("--lang", choices=LANGUAGES, help=t("cli_lang"))
-    drop.add_argument("--dry-run", action="store_true", help=t("cli_dry_run"))
-    drop.add_argument("-y", "--yes", action="store_true", help=t("cli_yes"))
-    drop.set_defaults(report=None)
+    _add_originals_command(subparsers, "revert-original",
+                           t("cli_cmd_revert", suffix=ORIG_SUFFIX))
+    _add_originals_command(subparsers, "drop-originals",
+                           t("cli_cmd_drop", suffix=ORIG_SUFFIX))
     return parser
 
 
