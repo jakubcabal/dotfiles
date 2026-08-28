@@ -514,14 +514,21 @@ def resample_filter(bits: int) -> str:
     """The ffmpeg filter that does the resampling and the requantising.
 
     soxr at 28 bit precision is the best resampler ffmpeg has. Dither is asked
-    for at 16 bit and nowhere else, for two independent reasons. It is the
-    only depth where it can be heard - at 24 and 32 the quantisation error
-    sits below -144 dBFS - and, more to the point, the only depth where
-    ffmpeg gets it right: noise shaping with a packed 32 bit output, which is
-    what `osf` has to be for 24 and 32, silently returns a full scale, clipped
-    mess. Measured here on a -24 dBFS tone: it came back at 0 dBFS with a
-    quarter of its samples pinned to the rail. So above 16 bit the samples are
-    only cut down to the raw format, with no dither_method anywhere near them.
+    for at 16 bit and nowhere else, for two independent reasons.
+
+    It is the only depth where dither does anything. Above it the word length
+    is cut down by ffmpeg's raw writer, which truncates (measured: an
+    arithmetic >>8), and that error sits at -144 dBFS - some 25 dB under the
+    noise floor of the best converter ever built, which means the recording's
+    own noise already dithers the 24th bit.
+
+    And it is the only depth where ffmpeg can be trusted with it. `osf` has no
+    s24 - ffmpeg has no 24 bit sample format at all - so 24 and 32 both have
+    to ask for packed s32, and over packed s32 several of the noise shaping
+    filters go unstable: shibata, low_shibata and f_weighted all turned a
+    -24 dBFS tone into 0 dBFS clipping here, while lipshitz and high_shibata
+    happened not to. Not a line to walk. Above 16 bit the samples are only cut
+    down to the raw format, with no dither_method anywhere near them.
     """
     if bits == 16:
         return ("aresample=resampler=soxr:precision=28"
