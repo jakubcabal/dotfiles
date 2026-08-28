@@ -270,6 +270,9 @@ rc_all_new      | {count} přibylo od poslední analýzy                        
 rc_conv_to      | převod na {format}, přepočítá soxr                                   | conversion to {format}, recomputed by soxr
 rc_conv_dither  | při 16 bitech se navíc přidá dither (shibata)                        | at 16 bit a dither is added on top (shibata)
 rc_conv_num     | {count} se převede, zbytek se jen překóduje                          | {count} will be converted, the rest are only re-encoded
+rc_warn_up      | {count} k převzorkování NAHORU - mezi vzorky není co doplnit         | {count} to be resampled UP - there is nothing to put between the samples
+rc_warn_family  | {count} přes hranici rodin 44,1 a 48 kHz - zbytečný přepočet         | {count} crossing between the 44.1 and 48 kHz families - a recompute for nothing
+rc_warn_bits    | {count} k navýšení hloubky - přibudou jen prázdné bity               | {count} to be given more bits - only empty bits are added
 rc_conv_warn    | Zvuk se PŘEPOČÍTÁ, není to bezeztrátové.                             | The audio is RECOMPUTED, this is not lossless.
 rc_conv_meta    | Tagy i obal zůstanou, cuesheet ne: odkazuje na vzorky, a ty se mění. | Tags and cover art are kept, the cuesheet is not: it indexes samples, and those change.
 rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})                        | {oldfmt} → {newfmt}, {old} → {new} ({change})
@@ -3071,6 +3074,44 @@ def wanted_format(args) -> str:
     return t("rc_conv_bits", bits=args.bits)
 
 
+#: The divisor that names each of the two sample rate families: 11025 catches
+#: 44.1 kHz and its multiples (22.05, 88.2, 176.4), 8000 the 48 kHz ones (16,
+#: 24, 32, 96, 192). A rate divisible by neither belongs to no family.
+RATE_FAMILIES = (11025, 8000)
+
+
+def rate_family(rate: int) -> int:
+    """Which family a sample rate belongs to, 0 for neither."""
+    return next((base for base in RATE_FAMILIES if rate % base == 0), 0)
+
+
+def conversion_warnings(live: Sequence, args) -> list:
+    """Say out loud which conversions can only cost, never gain.
+
+    None of the three is refused - someone may have a reason, and one file in
+    a folder must not veto the rest - but all three are worth a line before an
+    irreversible write, because each only invents data. Upsampling has nothing
+    to put between the samples it already holds. Extra bits have nothing to
+    put in them. And crossing between the 44.1 and 48 kHz families recomputes
+    every single sample to land somewhere no better than where it started -
+    a 44.1 kHz master asked for 48 kHz is the usual way into that.
+    """
+    up = across = deeper = 0
+    for a in live:
+        if not needs_conversion(a.info, args):
+            continue
+        rate, bits = target_format(a.info, args)
+        old_rate, old_bits = a.info.sample_rate, a.info.bits_per_sample
+        old_family, new_family = rate_family(old_rate), rate_family(rate)
+        up += rate > old_rate
+        across += (rate != old_rate and old_family and new_family
+                   and old_family != new_family)
+        deeper += bits > old_bits
+    return [t(key, count=files(n)) for n, key in
+            ((up, "rc_warn_up"), (across, "rc_warn_family"),
+             (deeper, "rc_warn_bits")) if n]
+
+
 def cmd_reencode(args) -> int:
     """Squeeze weakly encoded files, or with --all everything the report holds.
 
@@ -3131,8 +3172,8 @@ def cmd_reencode(args) -> int:
         if not turning:
             lines.append(t("rc_promise"))
         else:
-            lines += [t("rc_conv_warn"), original_note(args.keep_original),
-                      t("rc_conv_meta")]
+            lines += [t("rc_conv_warn"), *conversion_warnings(live, args),
+                      original_note(args.keep_original), t("rc_conv_meta")]
         return lines[:1] + ["  " + line for line in lines[1:]]
 
     def summary(results: Sequence) -> list:
