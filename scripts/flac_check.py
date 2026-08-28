@@ -342,6 +342,10 @@ fake_upsampled | falešné hi-res: {claimed} kHz převzorkováno z {source} kHz,
 fake_padded    | falešná hloubka: hlavička říká {claimed} bitů, vzorky využívají {real} | padded depth: the header says {claimed} bits, the samples use {real}
 fake_caveat    | Ořez může mít i nahrávka z analogového pásu; ověř spektrogramem. AAC nad ~192 kbps se takhle chytit nedá. | An analogue tape source can be cut off too; check a spectrogram. AAC above ~192 kbps cannot be caught this way.
 fake_none      | Žádný soubor nelže o své kvalitě.                          | No file lies about its quality.
+fake_ok_header | ✅ Kvalita odpovídá deklaraci ({count}):                    | ✅ Quality matches the claim ({count}):
+fake_ok_cutoff | bez ořezu spektra                                          | no cutoff in the spectrum
+fake_ok_ultra  | ultrazvuk jen {db:.0f} dB pod hudbou                       | ultrasound only {db:.0f} dB below the music
+fake_ok_bits   | vzorky využívají všech {bits} bitů                         | the samples use all {bits} bits
 fake_skipped   | Nešlo změřit ({count}): {reason}                           | Could not be measured ({count}): {reason}
 
 # --- command line help ------------------------------------------------
@@ -1485,6 +1489,23 @@ def _find_upsampling(result: FakeCheck, fine: list, coarse: list) -> None:
                               0) or int(edge * 2 / 1000) * 1000
 
 
+def fake_ok_lines(check: FakeCheck) -> list:
+    """What was measured on a file that turned out to tell the truth.
+
+    A negative result is worth printing too - `find-fake --all` is asked for
+    exactly when someone wants to see that a file WAS checked - so each test
+    says what it found, joined into the one line per file the listings use.
+    """
+    parts = [t("fake_ok_cutoff")]
+    # A gap of zero means the test never ran: the ultrasound is only looked at
+    # above 48 kHz, and only where there are bands left to look at.
+    if check.ultra_gap_db:
+        parts.append(t("fake_ok_ultra", db=check.ultra_gap_db))
+    # An honest file leaves real_bits unset, so the claim is also the truth.
+    parts.append(t("fake_ok_bits", bits=check.claimed_bits))
+    return [", ".join(parts)]
+
+
 def fake_lines(check: FakeCheck) -> list:
     """One translated line per lie the file tells. Empty if it is honest."""
     lines = []
@@ -2338,6 +2359,13 @@ def print_fakes(checks: Sequence, root: str, blank: bool = True) -> None:
                 footer=t("fake_caveat"), blank=blank)
 
 
+def print_honest(checks: Sequence, root: str) -> None:
+    """Files that turned out to be what their header claims."""
+    print_group(t("fake_ok_header", count=files(len(checks))),
+                [(rel(c.path, root), fake_ok_lines(c))
+                 for c in sorted(checks, key=lambda c: c.path)], blank=False)
+
+
 def print_findings(report: Report, show_all: bool) -> None:
     """The four sections of a report: findings, damaged, unreadable, lying."""
     root = report.root
@@ -2726,7 +2754,7 @@ def cmd_find_fake(args) -> int:
     at 128 kbps cannot be repaired, only replaced by a better copy. That is
     why this stays out of the analyze/reencode/repair chain. It runs on the
     stored report when there is one, and on the headers alone when there
-    is not.
+    is not. --all also lists what each honest file was cleared on.
     """
     report_file = args.report or default_report_path(args.folder)
     try:
@@ -2764,6 +2792,13 @@ def cmd_find_fake(args) -> int:
         print_fakes(found, args.folder, blank=False)
     else:
         print(t("fake_none"))
+
+    # The blank line is the group's own: every other section here is printed
+    # tight against the one before it, and this one can run for pages.
+    if args.all and (honest := [r for r in results
+                                if not r.suspicious and not r.error]):
+        print()
+        print_honest(honest, args.folder)
 
     if skipped := [r for r in results if r.error]:
         print_group(t("fake_skipped", count=files(len(skipped)),
@@ -3084,6 +3119,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     find_fake = subparsers.add_parser("find-fake", help=t("cli_cmd_findfake"))
     _add_common(find_fake)
+    find_fake.add_argument("--all", action="store_true", help=t("cli_all"))
 
     reencode = subparsers.add_parser("reencode", help=t("cli_cmd_reencode"))
     _add_common(reencode)
