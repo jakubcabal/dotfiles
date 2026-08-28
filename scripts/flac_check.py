@@ -227,6 +227,10 @@ fix_no_meta       | tagy se přenést nepodařilo                               
 # --- reencode ---------------------------------------------------------
 rc_nothing      | Report nehlásí nic k překódování.                          | The report lists nothing to re-encode.
 rc_confirm      | Chystám se PŘEPSAT {count} na místě ({total}).             | About to OVERWRITE {count} in place ({total}).
+rc_all_scope    | všechny soubory z reportu, přepíší se jen ty s úsporou aspoň {min:g} % | every file in the report, but only those saving at least {min:g} % get rewritten
+rc_all_any      | všechny soubory z reportu, přepíší se všechny bez ohledu na úsporu | every file in the report, all of them rewritten whatever the saving
+rc_all_skipped  | {count} s vadou vynecháno, na ty je repair                 | {count} with a defect left out, repair is the command for those
+rc_all_new      | {count} přibylo od poslední analýzy                        | {count} appeared since the last analyze
 rc_settings     | nastavení: flac {opts}                                     | settings: flac {opts}
 rc_promise      | Zvuk zůstane bit po bitu stejný (ověřuje se MD5), tagy a obal také. | The audio stays bit-for-bit identical (MD5 checked), so do tags and cover art.
 rc_not_tty      | Vstup není terminál - pro neinteraktivní běh použij --yes. | Input is not a terminal - use --yes for non-interactive runs.
@@ -236,8 +240,10 @@ rc_running      | Překódovávám ({count})                                    
 rc_running_dry  | Zkouším nanečisto ({count})                                | Dry run over ({count})
 rc_replaced     | {old} → {new} (ušetřeno {saved}, {pct:.1f} %)              | {old} → {new} (saved {saved}, {pct:.1f} %)
 rc_would        | ušetřilo by se {saved} ({pct:.1f} %), soubor nezměněn      | would save {saved} ({pct:.1f} %), file unchanged
+rc_nogain_done  | {old} → {new} (nic se neušetřilo, +{pct:.2f} %)            | {old} → {new} (nothing saved, +{pct:.2f} %)
+rc_nogain_dry   | neušetřilo by se nic (+{pct:.2f} %), přepsal by se přesto  | nothing would be saved (+{pct:.2f} %), it would be rewritten anyway
 rc_would_subset | vrátil by se do subsetu ({change}), soubor nezměněn        | would return into the subset ({change}), file unchanged
-rc_skipped      | úspora pod {min} % ({saved}), originál ponechán            | saving below {min} % ({saved}), original kept
+rc_skipped      | úspora pod {min:g} % ({saved}), originál ponechán          | saving below {min:g} % ({saved}), original kept
 rc_subset_done  | v subsetu, {old} → {new} ({change})                        | now in subset, {old} → {new} ({change})
 rc_grew         | naroste o {pct:.2f} %                                      | grows by {pct:.2f} %
 rc_saved_pct    | ušetřeno {pct:.2f} %                                       | saved {pct:.2f} %
@@ -275,7 +281,7 @@ sum_fake        | Nesedí deklarovaná kvalita    | Quality is not what it claim
 sum_grew        | Narostlo o                    | Grew by
 sum_done        | Překódováno                   | Re-encoded
 sum_saved       | Ušetřeno                      | Saved
-sum_skipped     | Přeskočeno (malá úspora)      | Skipped (saving too small)
+sum_skipped     | Přeskočeno                    | Skipped
 sum_failed      | Selhalo (originál zachován)   | Failed (original kept)
 sum_repaired    | Zachráněno                    | Salvaged
 sum_subset_done | Vráceno do subsetu            | Returned into the subset
@@ -313,10 +319,11 @@ cli_jobs         | paralelních procesů (výchozí: počet jader)              
 cli_lang         | jazyk výstupu (výchozí: podle prostředí)                   | output language (default: from the environment)
 cli_report       | kam uložit report (výchozí: {path})                        | where to keep the report (default: {path})
 cli_all          | vypsat i soubory, které jsou v pořádku                     | list the files that are fine as well
+cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované      | re-encode every file, not just the weakly compressed ones
 cli_effort       | standard = -8 (výchozí), exhaustive = -8 -e -p (16x pomalejší, +0,05 %%) | standard = -8 (default), exhaustive = -8 -e -p (16x slower, +0.05 %%)
 cli_dry_run      | nic nezapisovat, jen spočítat výsledek                     | write nothing, only compute the outcome
 cli_yes          | neptat se na potvrzení                                     | do not ask for confirmation
-cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 1.0)              | smallest saving in %% per file (default: 1.0)
+cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 0 = přepsat vždy) | smallest saving in %% per file (default: 0 = always rewrite)
 cli_force        | analyzovat vše znovu, i beze změny od minule               | re-analyse everything, even what has not changed
 cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)           | scan the folder and store a report (decodes, slow)
 cli_cmd_show     | znovu vypsat uložený report                                | print the stored report again
@@ -870,20 +877,21 @@ def meets_threshold(saving: int, original_size: int,
 
     `None` means no threshold at all: that is the subset fix, where the point
     is playability rather than space, so the file is rewritten even when it
-    grows a little. A number is compared against the saving, and a file that
-    gains nothing is never rewritten.
+    grows a little. Zero means the same thing and is the default: every file
+    is rewritten, whatever it does to the size. Only a number above zero
+    actually holds anything back.
 
     Judged per file, never from a folder average - a few bad files among a
     hundred good ones would dissolve below the threshold even though rewriting
     exactly those pays off. Measured: 1 file saving 50 % among 80 good ones
     averages 4.17 %, i.e. under the default threshold.
 
-    The threshold only exists to skip pointless work: re-encoding is cheap, so
-    anything that really shrinks is worth doing. On a real library files with
-    block 1152 save 11-17 % and everything else stays under 1 %, so the default
-    sits right in that empty gap.
+    A threshold above zero only skips work someone considers pointless. On a
+    real library files with block 1152 save 11-17 % and everything else stays
+    under 1 %, so `--min-saving 1` splits exactly that gap for anyone who
+    wants the big wins alone.
     """
-    if min_saving_pct is None:
+    if min_saving_pct is None or min_saving_pct <= 0:
         return True
     if original_size <= 0:
         return False
@@ -2150,10 +2158,17 @@ def result_detail(res: Outcome, min_saving: float) -> str:
         key = "rc_failed" if res.kind in (Kind.REENCODE, Kind.SUBSET) else "fix_failed"
         return t(key, error=res.error)
     if res.status is Status.NO_GAIN:
+        # Only a threshold above zero produces this status at all.
         return t("rc_skipped", min=min_saving, saved=human(res.saved))
 
     dry = res.status is Status.DRY_RUN
     if res.kind is Kind.REENCODE:
+        if res.saved <= 0:
+            # Without a threshold even these are rewritten, so say plainly
+            # that the rewrite bought nothing.
+            return (t("rc_nogain_dry", pct=abs(res.saved_pct)) if dry
+                    else t("rc_nogain_done", old=human(res.old_size),
+                           new=human(res.new_size), pct=abs(res.saved_pct)))
         return (t("rc_would", saved=human(res.saved), pct=res.saved_pct) if dry
                 else t("rc_replaced", old=human(res.old_size),
                        new=human(res.new_size), saved=human(res.saved),
@@ -2275,6 +2290,26 @@ def live_targets(items: Sequence, root: str) -> tuple:
             continue
         fresh.append(item)
     return fresh, skipped
+
+
+def adopt_new_files(report: Report, jobs: int) -> list:
+    """Take in files that appeared under the folder since the last analyze.
+
+    `reencode --all` promises every file in the folder, and the report is only
+    as fresh as the last analyze. Re-encoding one needs nothing but its header
+    - the deep analysis decides which files are WORTH encoding, not whether it
+    is safe - so the header is read here and the entry marked partial, leaving
+    the stream itself for the next analyze.
+    """
+    known = report.by_path()
+    fresh = [p for p in collect_flac_files(report.root) if p not in known]
+    if not fresh:
+        return []
+    items = [classify(info) for info in read_all_metadata(fresh, jobs)]
+    for item in items:
+        item.partial = True
+    report.items += items
+    return items
 
 
 def refresh_entry(item: Analysis, keep_fake: bool) -> None:
@@ -2509,13 +2544,18 @@ def cmd_find_fake(args) -> int:
 
 def run_write_command(args, report: Report, targets: Sequence, nothing: str,
                       intro: Callable, running: Callable, worker: Callable,
-                      summary: Callable, min_saving: float = 0.0) -> int:
+                      summary: Callable, min_saving: float = 0.0,
+                      list_skipped: bool = True) -> int:
     """The skeleton both `reencode` and `repair` follow.
 
     Check the findings still hold, say what is about to happen, ask, do it in
     parallel, report, and write the report back. Only the targets, the wording
     and the summary differ - keeping the rest in one place is what guarantees
     the two commands treat a stale report or a refused confirmation alike.
+
+    `list_skipped` prints the files nothing was done to. Over a whole library
+    those are the majority, so `reencode --all` turns it off and lets the
+    summary count them instead.
     """
     if not targets:
         print(t(nothing))
@@ -2543,7 +2583,8 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
 
     print()
     for res in sorted(results, key=lambda r: r.info.path):
-        print_result(res, report.root, min_saving)
+        if list_skipped or res.status is not Status.NO_GAIN:
+            print_result(res, report.root, min_saving)
 
     by_path, changed = report.by_path(), 0
     for res in results:
@@ -2569,17 +2610,39 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
 
 
 def cmd_reencode(args) -> int:
-    """Squeeze weakly encoded files. The audio is verified sample for sample,
-    so there is nothing to lose and no backup to keep."""
+    """Squeeze weakly encoded files, or with --all everything the report holds.
+
+    The audio is verified sample for sample either way, so there is nothing to
+    lose and no backup to keep - and --min-saving still decides which of the
+    new files are worth keeping.
+    """
     report = require_report(args)
     if report is None:
         return 2
 
+    # The report already lists every file of the folder, the clean ones
+    # included - but only as of the last analyze, so --all also picks up what
+    # has appeared since.
+    added = len(adopt_new_files(report, args.jobs)) if args.all else 0
+    # A damaged file always carries info.error too, so this one condition
+    # drops both the unreadable and the damaged: re-encoding fixes neither,
+    # and the MD5 of a file with a lying header cannot even be checked.
+    healthy = [a for a in report.items if not a.info.error]
+    defective = len(report.items) - len(healthy)
+
     def intro(live: Sequence) -> list:
         total = human(sum(a.info.file_size for a in live))
-        return [t("rc_confirm", count=files(len(live)), total=total),
-                "  " + t("rc_settings", opts=" ".join(EFFORT_PRESETS[args.effort])),
-                "  " + t("rc_promise")]
+        lines = [t("rc_confirm", count=files(len(live)), total=total)]
+        if args.all:
+            lines.append(t("rc_all_scope", min=args.min_saving)
+                         if args.min_saving > 0 else t("rc_all_any"))
+            if added:
+                lines.append(t("rc_all_new", count=files(added)))
+            if defective:
+                lines.append(t("rc_all_skipped", count=files(defective)))
+        lines += [t("rc_settings", opts=" ".join(EFFORT_PRESETS[args.effort])),
+                  t("rc_promise")]
+        return lines[:1] + ["  " + line for line in lines[1:]]
 
     def summary(results: Sequence) -> list:
         rows = []
@@ -2597,14 +2660,13 @@ def cmd_reencode(args) -> int:
         return rows
 
     return run_write_command(
-        args, report,
-        [a for a in report.items if not a.info.error and a.weak],
+        args, report, healthy if args.all else [a for a in healthy if a.weak],
         "rc_nothing", intro,
         lambda live: t("rc_running_dry" if args.dry_run else "rc_running",
                        count=files(len(live))),
         lambda a: recompress_file(a.info, args.effort, args.min_saving,
                                   args.dry_run),
-        summary, args.min_saving)
+        summary, args.min_saving, list_skipped=not args.all)
 
 
 def cmd_repair(args) -> int:
@@ -2720,7 +2782,9 @@ def build_parser() -> argparse.ArgumentParser:
     reencode = subparsers.add_parser("reencode", help=t("cli_cmd_reencode"))
     _add_common(reencode)
     _add_write_options(reencode)
-    reencode.add_argument("--min-saving", type=float, default=1.0, metavar="PCT",
+    reencode.add_argument("--all", action="store_true",
+                          help=t("cli_all_reencode"))
+    reencode.add_argument("--min-saving", type=float, default=0.0, metavar="PCT",
                           help=t("cli_min_saving"))
 
     repair = subparsers.add_parser("repair",
