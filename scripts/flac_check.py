@@ -13,6 +13,7 @@ happens exactly once.
     flac_check.py show      FOLDER     print the stored report again
     flac_check.py find-fake FOLDER     separate check: does the file lie?
     flac_check.py reencode  FOLDER     rewrite weakly compressed files
+                                       (--sample-rate/--bits also convert)
     flac_check.py repair    FOLDER     fix subset, headers, damaged audio
 
 WHAT CAN BE DETECTED, AND HOW RELIABLY
@@ -58,18 +59,28 @@ Two kinds of violation, only one of which re-encoding can fix:
   block size, LPC order, partition order   encoder parameters -> `repair`
                                            rewrites the file losslessly.
   bit depth, sample rate                   properties of the audio itself.
-                                           Re-encoding cannot change them;
-                                           only resampling or dithering could,
-                                           and that would be lossy. Reported,
-                                           never touched. 24 bit and 96 kHz
-                                           are inside the subset, so ordinary
-                                           hi-res material is never affected.
+                                           Changing them means resampling or
+                                           dithering, i.e. losing audio, so
+                                           `repair` never does it - only
+                                           `reencode --sample-rate/--bits`,
+                                           when explicitly asked. 24 bit and
+                                           96 kHz are inside the subset, so
+                                           ordinary hi-res is never affected.
 
 OVERWRITE SAFETY
 Encoding goes to a temporary file in the same directory. The original is
 replaced atomically (os.replace) only after the new file passes both an MD5
 check of the decoded audio and `flac -t`. On any problem the temporary file
 is removed and the original is left untouched.
+
+`reencode --sample-rate/--bits` is the one exception, and the only write in
+the script that is not lossless: the audio is deliberately a different one
+afterwards, so the original MD5 cannot match. What is verified instead is that
+the file really has the requested format, is as long as the change of rate
+implies, and that its header MD5 matches the audio it decodes to - which is
+what proves the encoder wrote down exactly what the resampler produced. No
+copy of the original is kept, and the confirmation says so before anything is
+written.
 
 `repair` handles three defects. Returning a file into the subset and
 correcting a lying header are both verifiable, so the original is simply
@@ -80,7 +91,9 @@ carried over into the replacement.
 Whether to rewrite a file is decided PER FILE, never from a folder average,
 see meets_threshold().
 
-Requires Python 3.8+ and the `flac` tool 1.3+ in PATH. No PyPI packages.
+Requires Python 3.8+ and the `flac` tool 1.3+ in PATH (1.4+ for 32 bit
+output). Converting with --sample-rate/--bits also needs `ffmpeg` built with
+libsoxr. No PyPI packages.
 """
 
 from __future__ import annotations
@@ -97,6 +110,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor,
                                 as_completed)
@@ -140,9 +154,11 @@ def _messages(table: str) -> dict:
 
 MESSAGES = _messages(r"""
 # --- dependencies -----------------------------------------------------
-dep_python_old   | Python {have} je starý, potřeba {want}+ | Python {have} is too old, need {want}+
-dep_flac_missing | nástroj 'flac' není v PATH              | the 'flac' tool is not in PATH
-dep_flac_old     | flac {have} je starý, potřeba {want}+   | flac {have} is too old, need {want}+
+dep_python_old     | Python {have} je starý, potřeba {want}+          | Python {have} is too old, need {want}+
+dep_flac_missing   | nástroj 'flac' není v PATH                       | the 'flac' tool is not in PATH
+dep_flac_old       | flac {have} je starý, potřeba {want}+            | flac {have} is too old, need {want}+
+dep_ffmpeg_missing | nástroj 'ffmpeg' není v PATH (nutný pro převod)  | the 'ffmpeg' tool is not in PATH (needed for the conversion)
+dep_ffmpeg_soxr    | ffmpeg neumí resampler soxr (chybí libsoxr)      | this ffmpeg has no soxr resampler (built without libsoxr)
 
 # --- read and encode errors -------------------------------------------
 err_eof              | neočekávaný konec souboru v metadatech   | unexpected end of file in the metadata
@@ -154,6 +170,7 @@ err_no_output        | bez výpisu                               | no output
 err_analyze_failed   | flac -a skončil s kódem {code}: {detail} | flac -a exited with {code}: {detail}
 err_no_frames        | flac -a nevrátil žádné rámce             | flac -a returned no frames
 err_encode_failed    | flac skončil s kódem {code}: {detail}    | flac exited with {code}: {detail}
+err_resample         | ffmpeg skončil s kódem {code}: {detail}  | ffmpeg exited with {code}: {detail}
 err_md5_decode       | dekódování pro MD5 selhalo               | decoding for the MD5 failed
 
 # --- losslessness check -----------------------------------------------
@@ -161,6 +178,10 @@ err_mismatch    | nesouhlasí {field}: {old} -> {new}            | {field} does 
 err_md5_unset   | nový soubor nemá MD5, nelze ověřit            | the new file carries no MD5, cannot verify
 err_md5_differs | MD5 se liší - překódování NEBYLO bezeztrátové | MD5 differs - the re-encode was NOT lossless
 err_flac_t      | flac -t neprošel: {detail}                    | flac -t failed: {detail}
+
+# --- conversion check --------------------------------------------------
+err_samples     | převod vrátil {new} vzorků místo {old}        | the conversion returned {new} samples instead of {old}
+err_md5_content | MD5 v hlavičce nesedí na zvuk v souboru       | the MD5 in the header does not match the audio in the file
 
 # --- severity and labels ----------------------------------------------
 sev_ok   | v pořádku                    | fine
@@ -231,6 +252,15 @@ rc_all_scope    | všechny soubory z reportu, přepíší se jen ty s úsporou a
 rc_all_any      | všechny soubory z reportu, přepíší se všechny bez ohledu na úsporu | every file in the report, all of them rewritten whatever the saving
 rc_all_skipped  | {count} s vadou vynecháno, na ty je repair                 | {count} with a defect left out, repair is the command for those
 rc_all_new      | {count} přibylo od poslední analýzy                        | {count} appeared since the last analyze
+rc_conv_to      | převod na {format}, přepočítá soxr s ditherem shibata      | conversion to {format}, recomputed by soxr with shibata dither
+rc_conv_num     | {count} se převede, zbytek se jen překóduje                | {count} will be converted, the rest are only re-encoded
+rc_conv_risk    | Zvuk se PŘEPOČÍTÁ - není to bezeztrátové a originál nikde nezůstane. | The audio is RECOMPUTED - this is not lossless and no copy of the original is kept.
+rc_conv_meta    | Tagy i obal zůstanou, cuesheet ne: odkazuje na vzorky, a ty se mění. | Tags and cover art are kept, the cuesheet is not: it indexes samples, and those change.
+rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})              | {oldfmt} → {newfmt}, {old} → {new} ({change})
+rc_conv_would   | převedl by se na {newfmt} ({change}), soubor nezměněn      | would be converted to {newfmt} ({change}), file unchanged
+rc_conv_rate    | {khz:g} kHz (hloubka beze změny)                           | {khz:g} kHz (depth left as it is)
+rc_conv_bits    | {bits} bit (frekvence beze změny)                          | {bits} bit (rate left as it is)
+rc_conv_bad     | {rate} Hz se do FLACu nezapíše, zvol běžnou frekvenci      | FLAC cannot store {rate} Hz, pick a common rate
 rc_settings     | nastavení: flac {opts}                                     | settings: flac {opts}
 rc_promise      | Zvuk zůstane bit po bitu stejný (ověřuje se MD5), tagy a obal také. | The audio stays bit-for-bit identical (MD5 checked), so do tags and cover art.
 rc_not_tty      | Vstup není terminál - pro neinteraktivní běh použij --yes. | Input is not a terminal - use --yes for non-interactive runs.
@@ -280,6 +310,7 @@ sum_subset_keep | Mimo subset (neopravitelné)   | Outside subset (not fixable)
 sum_fake        | Nesedí deklarovaná kvalita    | Quality is not what it claims
 sum_grew        | Narostlo o                    | Grew by
 sum_done        | Překódováno                   | Re-encoded
+sum_converted   | Převedeno                     | Converted
 sum_saved       | Ušetřeno                      | Saved
 sum_skipped     | Přeskočeno                    | Skipped
 sum_failed      | Selhalo (originál zachován)   | Failed (original kept)
@@ -324,6 +355,8 @@ cli_effort       | standard = -8 (výchozí), exhaustive = -8 -e -p (16x pomalej
 cli_dry_run      | nic nezapisovat, jen spočítat výsledek                     | write nothing, only compute the outcome
 cli_yes          | neptat se na potvrzení                                     | do not ask for confirmation
 cli_min_saving   | nejmenší úspora v %% na soubor (výchozí: 0 = přepsat vždy) | smallest saving in %% per file (default: 0 = always rewrite)
+cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny | target sample rate in Hz (e.g. 48000), otherwise left as it is
+cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny       | target bit depth (16, 24, 32), otherwise left as it is
 cli_force        | analyzovat vše znovu, i beze změny od minule               | re-analyse everything, even what has not changed
 cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)           | scan the folder and store a report (decodes, slow)
 cli_cmd_show     | znovu vypsat uložený report                                | print the stored report again
@@ -403,6 +436,16 @@ SUBSET_CODED_RATES = frozenset({8000, 16000, 22050, 24000, 32000, 44100,
 EFFORT_PRESETS = {"standard": ["-8"], "exhaustive": ["-8", "-e", "-p"]}
 DEFAULT_EFFORT = "standard"
 
+# Changing the sample rate or the bit depth is the one thing flac cannot do,
+# so ffmpeg does that part and hands the raw samples over - the file itself is
+# still written by flac, with the same preset as every other file this tool
+# writes. Raw and not WAV: a pipe has no length to put in a WAV header, and
+# every parameter is known here anyway.
+#: Bit depth -> the raw sample format both sides speak.
+RAW_FORMATS = {16: "s16le", 24: "s24le", 32: "s32le"}
+#: flac 1.4 was the first that could encode 32 bit.
+MIN_FLAC_32 = (1, 4, 0)
+
 # Measured throughput per thread (MB/s), for rough run-time estimates only.
 # On 12 cores: deep 832 MB in 2.6 s, encode 832 MB in 5.9 s, fake ~1.5 MB/s.
 DEEP_RATE, ENCODE_RATE, FAKE_RATE = 25, 12, 2
@@ -417,6 +460,26 @@ CHUNK = 1 << 16
 
 #: Suffix for the untouched original kept aside by `repair`.
 ORIG_SUFFIX = ".orig.flac"
+
+
+def resample_filter(bits: int) -> str:
+    """The ffmpeg filter that does the resampling and the requantising.
+
+    soxr at 28 bit precision is the best resampler ffmpeg has. `osf` is what
+    turns the dithering on, so it is set to the target depth - but only 16 bit
+    needs it: for 24 and 32 the internal s32 is simply cut down to the raw
+    format, and an error at bit 25 sits below -144 dBFS.
+    """
+    return ("aresample=resampler=soxr:precision=28"
+            f":osf={'s16' if bits == 16 else 's32'}:dither_method=shibata")
+
+
+def converting(args) -> bool:
+    """Did the user ask for a different rate or depth? That one question
+    decides everything: which files are targets, which tool writes them,
+    whether ffmpeg is needed and what the confirmation may promise."""
+    return bool(getattr(args, "sample_rate", None)
+                or getattr(args, "bits", None))
 
 
 # --------------------------------------------------------------------------
@@ -441,19 +504,42 @@ def _dotted(version: Sequence) -> str:
     return ".".join(map(str, version))
 
 
-def check_dependencies(need_flac: bool) -> list:
-    """Missing or too old dependencies."""
+def ffmpeg_can_resample() -> str | None:
+    """The message to print if ffmpeg cannot do the conversion, else None.
+
+    Answered by doing it: a hundredth of a second of silence through the real
+    filter chain settles both whether ffmpeg is there and whether it was built
+    with libsoxr, which no version string says out loud.
+    """
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-v", "error", "-nostdin", "-f", "lavfi",
+             "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.01",
+             "-af", resample_filter(16), "-ar", "48000", "-f", "s16le", "-"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return t("dep_ffmpeg_missing")
+    return None if probe.returncode == 0 else t("dep_ffmpeg_soxr")
+
+
+def check_dependencies(args) -> list:
+    """Missing or too old dependencies for the command about to run."""
     problems = []
     if sys.version_info[:2] < MIN_PYTHON:
         problems.append(t("dep_python_old", have=_dotted(sys.version_info[:3]),
                           want=_dotted(MIN_PYTHON)))
-    if need_flac:
+    if args.command in NEEDS_FLAC:
+        # 32 bit output is the only thing here that needs a newer flac than
+        # the script otherwise gets by with.
+        want = MIN_FLAC_32 if getattr(args, "bits", None) == 32 else MIN_FLAC
         version = flac_version()
         if version is None:
             problems.append(t("dep_flac_missing"))
-        elif version and version < MIN_FLAC:
+        elif version and version < want:
             problems.append(t("dep_flac_old", have=_dotted(version),
-                              want=_dotted(MIN_FLAC)))
+                              want=_dotted(want)))
+    if converting(args) and (problem := ffmpeg_can_resample()):
+        problems.append(problem)
     return problems
 
 
@@ -815,6 +901,7 @@ class Kind(str, enum.Enum):
     stored spectral check still describes what is on disk."""
 
     REENCODE = "reencode"        # squeezed, sample for sample the same audio
+    CONVERT = "convert"          # resampled or requantised, so the audio moved
     SUBSET = "subset"            # re-encoded to get back inside the subset
     HEADER = "header"            # 24 bytes of STREAMINFO corrected
     SALVAGE = "salvage"          # decoded past the damage, so the audio moved
@@ -838,6 +925,8 @@ class Outcome:
     status: Status
     old_size: int = 0
     new_size: int = 0
+    rate: int = 0                # what a conversion turned the stream into,
+    bits: int = 0                # both zero for every other kind of write
     recovered_samples: int = 0
     backup_path: str = ""
     meta_ok: bool = True
@@ -1007,6 +1096,109 @@ def recompress_file(info: FlacInfo, effort: str, min_saving_pct: float | None,
         except OSError:
             pass
         return Outcome(info, kind, Status.FAILED, old_size, error=str(e))
+
+
+def assert_converted(original: FlacInfo, new_path: str, rate: int, bits: int,
+                     expected_samples: int) -> None:
+    """Verify a converted file is the one that was asked for, and intact.
+
+    Losslessness is out of the question here - the audio was meant to change -
+    so these are the strongest checks that still hold: the stream really has
+    the requested format, its length is what the change of rate implies, and
+    the MD5 in the header matches the audio the file decodes to. That last one
+    is the same guarantee as always, only anchored differently: the header MD5
+    is computed over what the encoder was fed, so if it survives a decode, the
+    file holds exactly the samples the resampler produced.
+    """
+    new = read_flac_metadata(new_path)
+    for attr, want in (("sample_rate", rate), ("bits_per_sample", bits),
+                       ("channels", original.channels)):
+        if getattr(new, attr) != want:
+            raise RuntimeError(t("err_mismatch", field=attr, old=want,
+                                 new=getattr(new, attr)))
+    # soxr hits the count exactly; the tolerance is only so that a resampler
+    # rounding the last block differently does not fail a whole library. A
+    # stream that stopped early is caught by ffmpeg's exit code instead.
+    if abs(new.total_samples - expected_samples) > max(8, expected_samples // 1000):
+        raise RuntimeError(t("err_samples", new=new.total_samples,
+                             old=expected_samples))
+    if new.md5 == MD5_UNSET:
+        raise RuntimeError(t("err_md5_unset"))
+    if new.md5 != raw_audio_md5(new_path):
+        raise RuntimeError(t("err_md5_content"))
+    flac_test(new_path)
+
+
+def convert_file(info: FlacInfo, effort: str, rate: int, bits: int,
+                 dry_run: bool) -> Outcome:
+    """Resample and requantise one file in place.
+
+    ffmpeg only moves the samples to the wanted rate and depth and passes them
+    on raw; the file is written by flac, so it comes out with the same preset,
+    the same seek table and the same vendor string as everything else here.
+    `-vn` keeps the cover art out of that pipe - handed to ffmpeg as a video
+    stream it would be re-encoded, and a broken one fails the whole run.
+
+    This is the one write that is not lossless, so the original is gone once it
+    succeeds - which is what the confirmation says before any of this starts.
+    """
+    path = info.path
+    old_size = os.path.getsize(path)
+    expected = round(info.total_samples * rate / info.sample_rate)
+    tmp = os.path.join(os.path.dirname(path) or ".",
+                       f".{os.path.basename(path)}.convert.tmp")
+    try:
+        # ffmpeg's own errors go to a file, not a pipe: flac is holding the
+        # other pipe open, and two full buffers would deadlock the pair.
+        with tempfile.TemporaryFile() as log:
+            src = subprocess.Popen(
+                ["ffmpeg", "-v", "error", "-nostdin", "-vn", "-i", path,
+                 "-af", resample_filter(bits), "-ar", str(rate),
+                 "-f", RAW_FORMATS[bits], "-"],
+                stdout=subprocess.PIPE, stderr=log)
+            enc = subprocess.run(
+                ["flac", "-s", "-f", *EFFORT_PRESETS[effort],
+                 "--force-raw-format", "--endian=little", "--sign=signed",
+                 f"--channels={info.channels}", f"--bps={bits}",
+                 f"--sample-rate={rate}", "-o", tmp, "-"],
+                stdin=src.stdout, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE)
+            src.stdout.close()
+            # flac happily encodes a stream that stopped early, so ffmpeg's
+            # exit code is what says the audio came over whole - and it is
+            # asked about first, because it explains a failing flac too.
+            if src.wait() != 0:
+                log.seek(0)
+                raise RuntimeError(t("err_resample", code=src.returncode,
+                                     detail=_last_line(log.read().decode(
+                                         "utf-8", "replace"))))
+        if enc.returncode != 0:
+            raise RuntimeError(t("err_encode_failed", code=enc.returncode,
+                                 detail=_last_line(enc.stderr.decode(
+                                     "utf-8", "replace"))))
+
+        # Tags and cover art before the checks, so what is verified is the
+        # file that will land on disk and not a stage before it.
+        graft_metadata(read_metadata_blocks(path), tmp)
+        assert_converted(info, tmp, rate, bits, expected)
+        new_size = os.path.getsize(tmp)
+
+        if not dry_run:
+            _copy_owner_and_times(path, tmp)
+            os.replace(tmp, path)   # atomic, the original never disappears
+        else:
+            os.remove(tmp)
+        return Outcome(info, Kind.CONVERT,
+                       Status.DRY_RUN if dry_run else Status.DONE,
+                       old_size, new_size, rate, bits)
+
+    except (OSError, RuntimeError, ValueError) as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return Outcome(info, Kind.CONVERT, Status.FAILED, old_size,
+                       rate=rate, bits=bits, error=str(e))
 
 
 # --------------------------------------------------------------------------
@@ -1836,6 +2028,11 @@ def human(n: float) -> str:
     return f"{size:.1f} GB"
 
 
+def audio_format(rate: int, bits: int) -> str:
+    """A stream format the way the whole script says it: '44.1 kHz/16 bit'."""
+    return f"{rate / 1000:g} kHz/{bits} bit"
+
+
 def duration(seconds: float) -> str:
     if seconds < 90:
         return f"{max(1, round(seconds))} s"
@@ -2036,7 +2233,7 @@ def print_file_report(item: Analysis, root: str) -> None:
         print(f"   {item.severity.heading}"
               + (f"  {t('rep_partial')}" if item.partial else ""))
 
-    detail = [f"{info.sample_rate / 1000:g} kHz/{info.bits_per_sample} bit",
+    detail = [audio_format(info.sample_rate, info.bits_per_sample),
               f"{t('rep_block')}={info.max_blocksize}",
               *([t("rep_compression", pct=info.ratio * 100)]
                 if info.ratio is not None else []),
@@ -2155,7 +2352,8 @@ def result_detail(res: Outcome, min_saving: float) -> str:
     only a real result is worded per kind.
     """
     if res.status is Status.FAILED:
-        key = "rc_failed" if res.kind in (Kind.REENCODE, Kind.SUBSET) else "fix_failed"
+        key = ("rc_failed" if res.kind in (Kind.REENCODE, Kind.CONVERT,
+                                           Kind.SUBSET) else "fix_failed")
         return t(key, error=res.error)
     if res.status is Status.NO_GAIN:
         # Only a threshold above zero produces this status at all.
@@ -2173,6 +2371,17 @@ def result_detail(res: Outcome, min_saving: float) -> str:
                 else t("rc_replaced", old=human(res.old_size),
                        new=human(res.new_size), saved=human(res.saved),
                        pct=res.saved_pct))
+    if res.kind is Kind.CONVERT:
+        # A conversion is not judged on size at all - it was asked for - so
+        # the format is what the line leads with and the size only follows.
+        new_fmt = audio_format(res.rate, res.bits)
+        change = (t("rc_saved_pct", pct=res.saved_pct) if res.saved > 0
+                  else t("rc_grew", pct=-res.saved_pct))
+        return (t("rc_conv_would", newfmt=new_fmt, change=change) if dry
+                else t("rc_conv_done", oldfmt=audio_format(
+                           res.info.sample_rate, res.info.bits_per_sample),
+                       newfmt=new_fmt, old=human(res.old_size),
+                       new=human(res.new_size), change=change))
     if res.kind is Kind.SUBSET:
         # Getting back inside the subset may cost a little space, so the
         # change is worded rather than printed as a saving.
@@ -2589,10 +2798,10 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
     by_path, changed = report.by_path(), 0
     for res in results:
         if res.status is Status.DONE:
-            # Only salvaging rewrites the audio, so only there does the stored
-            # spectral check stop describing the file.
+            # Salvaging and converting rewrite the audio, so only there does
+            # the stored spectral check stop describing the file.
             refresh_entry(by_path[res.info.path],
-                          keep_fake=res.kind is not Kind.SALVAGE)
+                          keep_fake=res.kind not in (Kind.SALVAGE, Kind.CONVERT))
             changed += 1
 
     print_table(summary(results))
@@ -2609,15 +2818,48 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
     return 0
 
 
+def target_format(info: FlacInfo, args) -> tuple:
+    """(rate, bits) the file is meant to end up in. What the user did not ask
+    about stays as it is, so `--bits 16` alone never touches a sample rate."""
+    return (args.sample_rate or info.sample_rate,
+            args.bits or info.bits_per_sample)
+
+
+def needs_conversion(info: FlacInfo, args) -> bool:
+    """Is this file not already in the wanted format? A file that is stays out
+    of ffmpeg's way and is only re-encoded, bit for bit, as usual."""
+    return target_format(info, args) != (info.sample_rate, info.bits_per_sample)
+
+
+def wanted_format(args) -> str:
+    """The target as the confirmation says it, with the half the user left
+    alone named as such rather than filled in with a number it is not."""
+    if args.sample_rate and args.bits:
+        return audio_format(args.sample_rate, args.bits)
+    if args.sample_rate:
+        return t("rc_conv_rate", khz=args.sample_rate / 1000)
+    return t("rc_conv_bits", bits=args.bits)
+
+
 def cmd_reencode(args) -> int:
     """Squeeze weakly encoded files, or with --all everything the report holds.
 
     The audio is verified sample for sample either way, so there is nothing to
     lose and no backup to keep - and --min-saving still decides which of the
     new files are worth keeping.
+
+    --sample-rate and --bits break that promise on purpose: a file that is not
+    in the wanted format goes through ffmpeg instead, comes back as different
+    audio, and --min-saving no longer has a say - the point is the format, not
+    the size. Everything already in the wanted format is re-encoded as always.
     """
     report = require_report(args)
     if report is None:
+        return 2
+    if args.sample_rate is not None and not (
+            args.sample_rate > 0 and rate_is_codable(args.sample_rate)):
+        print(t("run_error", problem=t("rc_conv_bad", rate=args.sample_rate)),
+              file=sys.stderr)
         return 2
 
     # The report already lists every file of the folder, the clean ones
@@ -2629,10 +2871,19 @@ def cmd_reencode(args) -> int:
     # and the MD5 of a file with a lying header cannot even be checked.
     healthy = [a for a in report.items if not a.info.error]
     defective = len(report.items) - len(healthy)
+    convert = converting(args)
 
     def intro(live: Sequence) -> list:
         total = human(sum(a.info.file_size for a in live))
         lines = [t("rc_confirm", count=files(len(live)), total=total)]
+        # Asking for a format every live file is already in leaves an ordinary
+        # lossless re-encode, which must not be announced as anything else.
+        turning = sum(1 for a in live
+                      if needs_conversion(a.info, args)) if convert else 0
+        if turning:
+            lines.append(t("rc_conv_to", format=wanted_format(args)))
+            if turning < len(live):
+                lines.append(t("rc_conv_num", count=files(turning)))
         if args.all:
             lines.append(t("rc_all_scope", min=args.min_saving)
                          if args.min_saving > 0 else t("rc_all_any"))
@@ -2640,8 +2891,11 @@ def cmd_reencode(args) -> int:
                 lines.append(t("rc_all_new", count=files(added)))
             if defective:
                 lines.append(t("rc_all_skipped", count=files(defective)))
-        lines += [t("rc_settings", opts=" ".join(EFFORT_PRESETS[args.effort])),
-                  t("rc_promise")]
+        lines.append(t("rc_settings", opts=" ".join(EFFORT_PRESETS[args.effort])))
+        # The usual promise is the opposite of what a conversion does, so the
+        # two are never printed together.
+        lines += [t("rc_conv_risk"), t("rc_conv_meta")] if turning \
+            else [t("rc_promise")]
         return lines[:1] + ["  " + line for line in lines[1:]]
 
     def summary(results: Sequence) -> list:
@@ -2649,24 +2903,43 @@ def cmd_reencode(args) -> int:
         for status, key in ((Status.DRY_RUN, "sum_done"), (Status.DONE, "sum_done"),
                             (Status.NO_GAIN, "sum_skipped"),
                             (Status.FAILED, "sum_failed")):
-            if group := [r for r in results if r.status is status]:
+            if not (group := [r for r in results if r.status is status]):
+                continue
+            if status in (Status.DRY_RUN, Status.DONE):
+                # A converted file holds different audio than it did, so it is
+                # never counted among the re-encoded ones.
+                if turned := [r for r in group if r.kind is Kind.CONVERT]:
+                    rows.append((t("sum_converted"), len(turned)))
+                if kept := [r for r in group if r.kind is not Kind.CONVERT]:
+                    rows.append((t(key), len(kept)))
+                # A subset fix or a conversion can cost space, so the total may
+                # be negative; say "grew by" rather than "saved -416 kB".
+                total = sum(r.saved for r in group)
+                rows.append((t("sum_saved" if total >= 0 else "sum_grew"),
+                             human(abs(total))))
+            else:
                 rows.append((t(key), len(group)))
-                if status in (Status.DRY_RUN, Status.DONE):
-                    # A subset fix can cost space, so the total may be
-                    # negative; say "grew by" rather than "saved -416 kB".
-                    total = sum(r.saved for r in group)
-                    rows.append((t("sum_saved" if total >= 0 else "sum_grew"),
-                                 human(abs(total))))
         return rows
 
+    def worker(a: Analysis) -> Outcome:
+        if convert and needs_conversion(a.info, args):
+            return convert_file(a.info, args.effort, *target_format(a.info, args),
+                                args.dry_run)
+        return recompress_file(a.info, args.effort, args.min_saving, args.dry_run)
+
+    if args.all:
+        targets = healthy
+    elif convert:
+        targets = [a for a in healthy
+                   if a.weak or needs_conversion(a.info, args)]
+    else:
+        targets = [a for a in healthy if a.weak]
+
     return run_write_command(
-        args, report, healthy if args.all else [a for a in healthy if a.weak],
-        "rc_nothing", intro,
+        args, report, targets, "rc_nothing", intro,
         lambda live: t("rc_running_dry" if args.dry_run else "rc_running",
                        count=files(len(live))),
-        lambda a: recompress_file(a.info, args.effort, args.min_saving,
-                                  args.dry_run),
-        summary, args.min_saving, list_skipped=not args.all)
+        worker, summary, args.min_saving, list_skipped=not args.all)
 
 
 def cmd_repair(args) -> int:
@@ -2786,6 +3059,10 @@ def build_parser() -> argparse.ArgumentParser:
                           help=t("cli_all_reencode"))
     reencode.add_argument("--min-saving", type=float, default=0.0, metavar="PCT",
                           help=t("cli_min_saving"))
+    reencode.add_argument("--sample-rate", type=int, metavar="HZ",
+                          help=t("cli_sample_rate"))
+    reencode.add_argument("--bits", type=int, choices=sorted(RAW_FORMATS),
+                          help=t("cli_bits"))
 
     repair = subparsers.add_parser("repair",
                                    help=t("cli_cmd_repair", suffix=ORIG_SUFFIX))
@@ -2824,7 +3101,7 @@ def main() -> int:
         print(t("run_error", problem=t("run_bad_path", root=args.folder)),
               file=sys.stderr)
         return 2
-    if problems := check_dependencies(args.command in NEEDS_FLAC):
+    if problems := check_dependencies(args):
         for problem in problems:
             print(t("run_error", problem=problem), file=sys.stderr)
         return 2
