@@ -2818,11 +2818,21 @@ def cmd_find_fake(args) -> int:
         print(t("run_none"))
         return 0
 
-    results = run_parallel(t("fake_running", count=len(targets)),
-                           [a.info for a in targets], check_fake_source,
-                           args.jobs, weight=_by_size, cpu_bound=True)
-    for item, res in zip(targets, results):
-        item.fake = res
+    # A stored result still describes a file that has not moved a byte since,
+    # which is the same test analyze uses to reuse its own work.
+    todo = [a for a in targets
+            if args.force or not (a.fake and matches_disk(a.info))]
+    if report and not args.force:
+        print("  " + t("rp_reused", count=len(targets) - len(todo),
+                       fresh=len(todo)))
+
+    if todo:
+        measured = run_parallel(t("fake_running", count=len(todo)),
+                                [a.info for a in todo], check_fake_source,
+                                args.jobs, weight=_by_size, cpu_bound=True)
+        for item, res in zip(todo, measured):
+            item.fake = res
+    results = [a.fake for a in targets if a.fake]
     found = [r for r in results if r.suspicious]
 
     print()
@@ -3156,6 +3166,7 @@ def build_parser() -> argparse.ArgumentParser:
     find_fake = subparsers.add_parser("find-fake", help=t("cli_cmd_findfake"))
     _add_common(find_fake)
     find_fake.add_argument("--all", action="store_true", help=t("cli_all"))
+    find_fake.add_argument("--force", action="store_true", help=t("cli_force"))
 
     reencode = subparsers.add_parser("reencode", help=t("cli_cmd_reencode"))
     _add_common(reencode)
