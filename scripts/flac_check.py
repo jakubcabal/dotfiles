@@ -11,7 +11,8 @@ happens exactly once.
 
     flac_check.py analyze   FOLDER     full analysis -> report
     flac_check.py show      FOLDER     print the stored report again
-    flac_check.py find-fake FOLDER     separate check: does the file lie?
+    flac_check.py inspect   FOLDER     separate check: does the file lie,
+                                       and is its sample rate worth its size?
     flac_check.py reencode  FOLDER     rewrite weakly compressed files
                                        (--sample-rate/--bits also convert)
     flac_check.py repair    FOLDER     fix subset, headers, damaged audio
@@ -33,7 +34,7 @@ inferred from traces the encoder left behind. Best clues first:
 Levels -0/-1/-2 are detected reliably. Telling -5 from -8 after the fact is
 not possible, and the difference is about half a percent anyway.
 
-DOES THE FILE TELL THE TRUTH (`find-fake`)
+WHAT IS REALLY IN THE FILE (`inspect`)
 A FLAC is lossless with respect to what it was given, which says nothing about
 what that was. Three lies are detectable, and a file can tell any combination
 of them:
@@ -48,8 +49,18 @@ of them:
                   is zero. Not statistics - a proof.
 
 None of this is repairable, which is why it is a command of its own and not
-part of the analyze/reencode/repair chain. See the FakeCheck section for the
-thresholds and the measurements they came from.
+part of the analyze/reencode/repair chain.
+
+The same pass answers a second and quite different question: is the sample
+rate carrying anything? A 192 kHz file whose music stops at 22 kHz is not
+lying - the samples are honestly there - it is simply four times the size it
+needs to be. Three shapes give ultrasound away as something other than music:
+it climbs (nothing acoustic gains energy with frequency), it settles into a
+flat floor, or it has faded out from under the audible band. Only then is a
+lower rate named, and naming one changes nothing on disk.
+
+Both sets of thresholds, and the files they were measured on, are in the two
+comment blocks further down.
 
 MD5 IN THE HEADER
 STREAMINFO carries an MD5 of the decoded audio, and that is what makes a FLAC
@@ -134,7 +145,7 @@ from typing import BinaryIO, Callable, Sequence
 
 MIN_PYTHON = (3, 8)
 MIN_FLAC = (1, 3, 0)
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 
 # --------------------------------------------------------------------------
 # Languages
@@ -347,28 +358,29 @@ prog_eta        | zbývá {eta}                 | {eta} left
 prog_done       | hotovo za {elapsed}         | done in {elapsed}
 
 # --- summary ----------------------------------------------------------
-sum_total       | FLAC souborů celkem           | FLAC files in total
-sum_damaged     | POŠKOZENÉ                     | DAMAGED
-sum_harmless    | Vadná hlavička (zvuk je celý) | Bad header (audio is complete)
-sum_unreadable  | Nečitelná hlavička            | Unreadable header
-sum_no_md5      | Bez MD5 v hlavičce            | No MD5 in the header
-sum_subset_fix  | Mimo subset (opravitelné)     | Outside subset (fixable)
-sum_subset_keep | Mimo subset (neopravitelné)   | Outside subset (not fixable)
-sum_fake        | Nesedí deklarovaná kvalita    | Quality is not what it claims
-sum_grew        | Narostlo o                    | Grew by
-sum_done        | Překódováno                   | Re-encoded
-sum_converted   | Převedeno                     | Converted
-sum_saved       | Ušetřeno                      | Saved
-sum_failed      | Selhalo (originál zachován)   | Failed (original kept)
-sum_repaired    | Zachráněno                    | Salvaged
-sum_subset_done | Vráceno do subsetu            | Returned into the subset
-sum_header_done | Opravena hlavička             | Header corrected
+sum_total       | FLAC souborů celkem             | FLAC files in total
+sum_damaged     | POŠKOZENÉ                       | DAMAGED
+sum_harmless    | Vadná hlavička (zvuk je celý)   | Bad header (audio is complete)
+sum_unreadable  | Nečitelná hlavička              | Unreadable header
+sum_no_md5      | Bez MD5 v hlavičce              | No MD5 in the header
+sum_subset_fix  | Mimo subset (opravitelné)       | Outside subset (fixable)
+sum_subset_keep | Mimo subset (neopravitelné)     | Outside subset (not fixable)
+sum_fake        | Nesedí deklarovaná kvalita      | Quality is not what it claims
+sum_waste       | Frekvence vyšší, než hudba nese | Sample rate higher than the music
+sum_grew        | Narostlo o                      | Grew by
+sum_done        | Překódováno                     | Re-encoded
+sum_converted   | Převedeno                       | Converted
+sum_saved       | Ušetřeno                        | Saved
+sum_failed      | Selhalo (originál zachován)     | Failed (original kept)
+sum_repaired    | Zachráněno                      | Salvaged
+sum_subset_done | Vráceno do subsetu              | Returned into the subset
+sum_header_done | Opravena hlavička               | Header corrected
 
 # --- next step --------------------------------------------------------
 adv_next        | Další krok:                                                                           | Next step:
 adv_reencode    | {cmd}  ({count}, ušetří místo, {eta})                                                 | {cmd}  ({count}, saves space, {eta})
 adv_repair      | {cmd}  ({count} s vadou)                                                              | {cmd}  ({count} with a defect)
-adv_findfake    | {cmd}  (jestli soubory nelžou o kvalitě, {eta})                                       | {cmd}  (whether the files lie about their quality, {eta})
+adv_inspect     | {cmd}  (jestli soubory nelžou a jestli je frekvence k něčemu, {eta})                  | {cmd}  (whether the files lie, and whether their sample rate earns its size, {eta})
 adv_clean       | Vše v pořádku, nic k opravě.                                                          | All clear, nothing to fix.
 adv_fake        | {count} má horší kvalitu, než tvrdí; překódování nepomůže, jen lepší kopie ze zdroje. | {count} are worse than they claim; re-encoding will not help, only a better copy from the source.
 adv_was_dry     | Bylo to nanečisto. Spusť totéž bez --dry-run.                                         | That was a dry run. Repeat it without --dry-run.
@@ -382,7 +394,7 @@ adv_reverted    | {cmd}  (vrácené soubory už report nepopisuje)              
 
 # --- files that lie about their quality --------------------------------
 fake_unusable  | stopa je příliš krátká nebo tichá                                                                                | the track is too short or too quiet
-fake_running   | Ověřuji deklarovanou kvalitu ({count})                                                                           | Verifying the declared quality ({count})
+fake_running   | Prohlížím spektrum ({count})                                                                                     | Inspecting the spectrum ({count})
 fake_header    | 🎭 KVALITA NEODPOVÍDÁ DEKLARACI ({count}):                                                                        | 🎭 QUALITY IS NOT WHAT IS CLAIMED ({count}):
 fake_lossy     | ztrátový zdroj: ostrý ořez na {khz:.1f} kHz, sráz {db:.0f} dB - odpovídá {hint}                                  | lossy source: sharp cutoff at {khz:.1f} kHz, {db:.0f} dB cliff - consistent with {hint}
 fake_upsampled | falešné hi-res: {claimed} kHz převzorkováno z {source} kHz, nad {edge:.1f} kHz je ticho ({db:.0f} dB pod hudbou) | fake hi-res: {claimed} kHz upsampled from {source} kHz, silence above {edge:.1f} kHz ({db:.0f} dB below the music)
@@ -393,30 +405,39 @@ fake_ok_header | ✅ Kvalita odpovídá deklaraci ({count}):                    
 fake_ok_cutoff | bez ořezu spektra                                                                                                | no cutoff in the spectrum
 fake_ok_ultra  | ultrazvuk jen {db:.0f} dB pod hudbou                                                                             | ultrasound only {db:.0f} dB below the music
 fake_ok_bits   | vzorky využívají všech {bits} bitů                                                                               | the samples use all {bits} bits
-fake_skipped   | Nešlo změřit ({count}): {reason}                                                                                 | Could not be measured ({count}): {reason}
+
+# --- a sample rate carrying less than it costs -------------------------
+bw_header    | 📐 VYŠŠÍ FREKVENCE, NEŽ HUDBA POTŘEBUJE ({count}):                                           | 📐 A HIGHER SAMPLE RATE THAN THE MUSIC NEEDS ({count}):
+bw_floor     | hudba končí na {khz} kHz, nad tím ploché šumové dno {db} dB pod ní - stačilo by {rate}      | the music ends at {khz} kHz, above it a flat noise floor {db} dB below it - {rate} would hold it
+bw_shaping   | hudba končí na {khz} kHz, nad tím tvarovaný šum ({db} dB na {peak} kHz) - stačilo by {rate} | the music ends at {khz} kHz, above it shaped noise ({db} dB at {peak} kHz) - {rate} would hold it
+bw_quiet     | hudba slábne do {khz} kHz, výš je přes {db} dB pod ní - stačilo by {rate}                   | the music fades out by {khz} kHz, above that it is over {db} dB below it - {rate} would hold it
+bw_caveat    | Nic to neopravuje, jen šetří místo, a je to nevratný přepočet - originál si nech.           | This fixes nothing, it only saves space, and it is an irreversible recompute - keep the original.
+bw_none      | Žádný soubor nenese míň, než na kolik je nastavený.                                         | No file carries less than its sample rate is set for.
+bw_ok        | spektrum sahá až k {khz} kHz                                                                | the spectrum runs right up to {khz} kHz
+fake_skipped | Nešlo změřit ({count}): {reason}                                                            | Could not be measured ({count}): {reason}
 
 # --- command line help ------------------------------------------------
-cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.                       | Checks a FLAC library: compression, subset, damage.
-cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.                    | Run analyze first, then reencode or repair as needed.
-cli_command      | příkaz                                                                     | command
-cli_folder       | složka s hudbou (rekurzivně)                                               | music folder (recursive)
-cli_lang         | jazyk výstupu (výchozí: podle prostředí)                                   | output language (default: from the environment)
-cli_report       | kam uložit report (výchozí: {path})                                        | where to keep the report (default: {path})
-cli_all          | vypsat i soubory, které jsou v pořádku                                     | list the files that are fine as well
-cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované                      | re-encode every file, not just the weakly compressed ones
-cli_dry_run      | nic nezapisovat, jen spočítat výsledek                                     | write nothing, only compute the outcome
-cli_yes          | neptat se na potvrzení                                                     | do not ask for confirmation
-cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny           | target sample rate in Hz (e.g. 48000), otherwise left as it is
-cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny                       | target bit depth (16, 24, 32), otherwise left as it is
-cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk               | do not put the original aside as *{suffix}, not even where the audio changes
-cli_force        | analyzovat vše znovu, i beze změny od minule                               | re-analyse everything, even what has not changed
-cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)                           | scan the folder and store a report (decodes, slow)
-cli_cmd_show     | znovu vypsat uložený report                                                | print the stored report again
-cli_cmd_findfake | ověřit kvalitu: zdroj z MP3/AAC, falešné hi-res i hloubka (pomalé)         | verify the quality: MP3/AAC source, fake hi-res or depth (slow)
-cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou)       | re-encode weakly compressed files in place (lossless, tags kept)
-cli_cmd_repair   | opravit vady: subset, hlavička, poškozený zvuk (originál → *{suffix})      | fix defects: subset, header, damaged audio (original → *{suffix})
-cli_cmd_revert   | vrátit soubory z odložených originálů *{suffix} (současná verze se zahodí) | restore the files from the originals put aside as *{suffix} (the current version is thrown away)
-cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu                 | delete the originals put aside as *{suffix} once their replacement is in place
+cli_description  | Kontrola FLAC knihovny: komprese, subset, poškození.                                                     | Checks a FLAC library: compression, subset, damage.
+cli_epilog       | Nejdřív analyze, pak podle nálezu reencode nebo repair.                                                  | Run analyze first, then reencode or repair as needed.
+cli_command      | příkaz                                                                                                   | command
+cli_folder       | složka s hudbou (rekurzivně)                                                                             | music folder (recursive)
+cli_lang         | jazyk výstupu (výchozí: podle prostředí)                                                                 | output language (default: from the environment)
+cli_report       | kam uložit report (výchozí: {path})                                                                      | where to keep the report (default: {path})
+cli_all          | vypsat i soubory, které jsou v pořádku                                                                   | list the files that are fine as well
+cli_all_reencode | překódovat všechny soubory, ne jen slabě komprimované                                                    | re-encode every file, not just the weakly compressed ones
+cli_dry_run      | nic nezapisovat, jen spočítat výsledek                                                                   | write nothing, only compute the outcome
+cli_yes          | neptat se na potvrzení                                                                                   | do not ask for confirmation
+cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny                                         | target sample rate in Hz (e.g. 48000), otherwise left as it is
+cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny                                                     | target bit depth (16, 24, 32), otherwise left as it is
+cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk                                             | do not put the original aside as *{suffix}, not even where the audio changes
+cli_force        | analyzovat vše znovu, i beze změny od minule                                                             | re-analyse everything, even what has not changed
+cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)                                                         | scan the folder and store a report (decodes, slow)
+cli_cmd_show     | znovu vypsat uložený report                                                                              | print the stored report again
+cli_cmd_inspect  | prohlédnout spektrum: zdroj z MP3/AAC, falešné hi-res i hloubka, a jestli je frekvence k něčemu (pomalé) | inspect the spectrum: MP3/AAC source, fake hi-res or depth, and whether the sample rate earns its size (slow)
+cli_cmd_reencode | překódovat slabě komprimované na místě (bezeztrátově, tagy zůstanou)                                     | re-encode weakly compressed files in place (lossless, tags kept)
+cli_cmd_repair   | opravit vady: subset, hlavička, poškozený zvuk (originál → *{suffix})                                    | fix defects: subset, header, damaged audio (original → *{suffix})
+cli_cmd_revert   | vrátit soubory z odložených originálů *{suffix} (současná verze se zahodí)                               | restore the files from the originals put aside as *{suffix} (the current version is thrown away)
+cli_cmd_drop     | smazat odložené originály *{suffix}, které už mají náhradu                                               | delete the originals put aside as *{suffix} once their replacement is in place
 """)
 
 
@@ -1385,6 +1406,48 @@ ULTRA_SPAN_DB = 30.0         # but only if it is also featureless: more spread
 ULTRA_EDGE_DB = 20.0         # a band this far above the floor still has content
 ULTRA_MIN_RATE = 48000       # only files claiming more than this are checked
 
+# --------------------------------------------------------------------------
+# IS THE SAMPLE RATE WORTH ITS SIZE
+#
+# A second question about the same spectrum, and a different one. Above is a
+# lie detector: the file claims a rate it was never recorded at. This is not
+# about lying at all - the samples are honestly there - it is about whether
+# anything is IN them. A 192 kHz file whose music stops at 22 kHz is not
+# dishonest, it is four times larger than it needs to be.
+#
+# Three ways the ultrasound gives itself away as something other than music,
+# and a file is only ever accused when one of them can be pointed at:
+#
+#   it climbs    Nothing acoustic gains energy with frequency. A spectrum
+#                that turns and rises is noise shaping - a DSD transfer, or
+#                a requantisation - and everything from the turn up is that.
+#   it goes flat A converter's noise floor is featureless. Where the spectrum
+#                settles and stays settled, the music has already stopped.
+#   it fades     Neither of those, but the level has fallen so far under the
+#                audible band that no rate change could lose anything.
+#
+# Measured on 43 hi-res files (96, 176.4 and 192 kHz) and 9 upsampled ones.
+# The first two need no threshold worth arguing about - the shape decides -
+# and they carried 33 of the 43. Only the third rests on a chosen number.
+# --------------------------------------------------------------------------
+
+BW_FROM = 20000              # the question is only ever about ultrasound
+BW_RISE_DB = 6.0             # a climb this far off the low point is shaping
+BW_FLAT_DB = 4.0             # a stretch this level is a noise floor,
+BW_FLAT_SPAN = 8000          # if it holds that level over this many Hz
+BW_EDGE_DB = 6.0             # music ends where it rises this far off a floor
+BW_FLOOR_DB = 20.0           # ... and a floor has to be this far down to be
+                             # one: a drum solo's cymbals are flat up there
+                             # too, and they are the music, not the floor
+BW_QUIET_DB = 50.0           # or falls this far under the 15-20 kHz level
+#: What fraction of the sample rate a converter really delivers. Not the whole
+#: Nyquist: measured, 176.4 -> 44.1 kHz came out flat to 20.0 kHz and
+#: 176.4 -> 48 kHz to 22 kHz, both a shade under half.
+BW_PASSBAND = 0.49
+#: The rates worth being asked to drop to, per family. 22.05 and lower are not
+#: offered: no one wants them, and nothing in a library is measured that low.
+BW_LADDER = {11025: (44100, 88200, 176400), 8000: (48000, 96000, 192000)}
+
 #: Cutoff -> likely source. Ranges, not exact figures: what is detected is the
 #: last band BEFORE the cliff, so the real cutoff sits a little higher, and
 #: encoders differ. Measured: MP3 128k -> 16.5 kHz, AAC 128k -> 17.0 kHz,
@@ -1405,7 +1468,7 @@ _BH_WINDOW = [0.35875
 
 
 @dataclass
-class FakeCheck:
+class Inspection:
     """What a file claims to be versus what is actually in it."""
 
     path: str
@@ -1418,6 +1481,11 @@ class FakeCheck:
     real_bits: int = 0                          # if it is below claimed_bits
     claimed_bits: int = 0
     windows: int = 0                            # how much was listened to
+    content_hz: int = 0                         # where the music stops
+    content_why: str = ""                       # and what is above it
+    ultra_level_db: float = 0.0                 # the floor, or the shaping peak
+    ultra_peak_hz: int = 0                      # where that peak sits
+    enough_rate: int = 0                        # a rate that would hold it all
     error: str | None = None                    # a MESSAGES key
 
     @property
@@ -1431,6 +1499,11 @@ class FakeCheck:
     @property
     def padded_depth(self) -> bool:
         return 0 < self.real_bits < self.claimed_bits
+
+    @property
+    def wasteful(self) -> bool:
+        """Does the file carry less than its sample rate is paying for?"""
+        return self.enough_rate > 0
 
     @property
     def suspicious(self) -> bool:
@@ -1525,9 +1598,9 @@ def _dead_bytes(raw: bytes, width: int, dead: int) -> int:
     return dead
 
 
-def check_fake_source(info: FlacInfo) -> FakeCheck:
+def inspect_audio(info: FlacInfo) -> Inspection:
     """Look for the marks of a lossy source, upsampling and a padded depth."""
-    result = FakeCheck(path=info.path, claimed_rate=info.sample_rate,
+    result = Inspection(path=info.path, claimed_rate=info.sample_rate,
                        claimed_bits=info.bits_per_sample)
     rate, width = info.sample_rate, info.bits_per_sample // 8
     if not (rate and info.channels and width):
@@ -1567,10 +1640,12 @@ def check_fake_source(info: FlacInfo) -> FakeCheck:
                     for f, e in energy.items()}
     _find_cliff(result, fine)
     _find_upsampling(result, fine, coarse)
+    if coarse:
+        _find_bandwidth(result, rate)
     return result
 
 
-def _find_cliff(result: FakeCheck, fine: list) -> None:
+def _find_cliff(result: Inspection, fine: list) -> None:
     """The brick wall a lossy codec leaves behind.
 
     The fall is measured over LOSSY_CLIFF_SPAN neighbouring bands, not one:
@@ -1593,7 +1668,7 @@ def _find_cliff(result: FakeCheck, fine: list) -> None:
         result.cutoff_hz = 0          # gradual roll-off, nothing suspicious
 
 
-def _find_upsampling(result: FakeCheck, fine: list, coarse: list) -> None:
+def _find_upsampling(result: Inspection, fine: list, coarse: list) -> None:
     """Ultrasound that is not merely quiet but arithmetically absent.
 
     The level is compared with the file's own 15-20 kHz content rather than
@@ -1630,10 +1705,70 @@ def _find_upsampling(result: FakeCheck, fine: list, coarse: list) -> None:
                               0) or int(edge * 2 / 1000) * 1000
 
 
-def fake_ok_lines(check: FakeCheck) -> list:
+def _find_bandwidth(result: Inspection, rate: int) -> None:
+    """How far up the file actually carries music, and what would hold it.
+
+    Three readings of the one spectrum, and the lowest wins: whichever of them
+    happens first walking up is where the music stopped, whatever the ones
+    above it say. Nothing is claimed at all unless one of them fires - a file
+    whose spectrum simply keeps going is a file whose rate is earned.
+
+    Each hit carries the level worth quoting with it, because the same number
+    means different things: for a floor it is the level of the flat stretch
+    that identified it, for shaping the height of the hump.
+    """
+    up = sorted(f for f in result.bands if f >= BW_FROM)
+    audible = [v for f, v in result.bands.items() if 15000 <= f <= 20000]
+    if len(up) < 4 or not audible:
+        return
+    reference = statistics.median(audible)
+    hits = {}                        # why -> (edge, level to quote, peak)
+
+    # It climbs. Nothing acoustic does, so the turn is the last place the
+    # music could still have been.
+    low, turn = result.bands[up[0]], up[0]
+    for f in up:
+        if result.bands[f] < low:
+            low, turn = result.bands[f], f
+        elif result.bands[f] > low + BW_RISE_DB:
+            peak = max((g for g in up if g > turn), key=lambda g: result.bands[g])
+            hits["shaping"] = (turn, result.bands[peak], peak)
+            break
+
+    # It goes flat, and does so far enough down to be a converter's floor and
+    # not the music itself. The music stopped where it left that level.
+    for i, f in enumerate(up):
+        if up[-1] < f + BW_FLAT_SPAN:
+            break
+        run = [result.bands[g] for g in up[i:] if g <= f + BW_FLAT_SPAN]
+        level = statistics.median(run)
+        if max(run) - min(run) < BW_FLAT_DB and level < reference - BW_FLOOR_DB:
+            edge = max((g for g in up if g < f
+                        and result.bands[g] > level + BW_EDGE_DB), default=f)
+            hits["floor"] = (edge, level, 0)
+            break
+
+    # It fades out from under the audible band.
+    if faded := [f for f in up if result.bands[f] < reference - BW_QUIET_DB]:
+        hits["quiet"] = (faded[0], reference - BW_QUIET_DB, 0)
+
+    if not hits:
+        result.content_hz = max(up)
+        return
+    result.content_why = min(hits, key=lambda k: hits[k][0])
+    result.content_hz, level, peak = hits[result.content_why]
+    result.ultra_level_db = level - reference
+    result.ultra_peak_hz = peak
+    ladder = BW_LADDER.get(rate_family(rate), BW_LADDER[8000])
+    result.enough_rate = next((r for r in ladder
+                               if r * BW_PASSBAND >= result.content_hz
+                               and r < rate), 0)
+
+
+def fake_ok_lines(check: Inspection) -> list:
     """What was measured on a file that turned out to tell the truth.
 
-    A negative result is worth printing too - `find-fake --all` is asked for
+    A negative result is worth printing too - `inspect --all` is asked for
     exactly when someone wants to see that a file WAS checked - so each test
     says what it found, joined into the one line per file the listings use.
     """
@@ -1644,10 +1779,33 @@ def fake_ok_lines(check: FakeCheck) -> list:
         parts.append(t("fake_ok_ultra", db=check.ultra_gap_db))
     # An honest file leaves real_bits unset, so the claim is also the truth.
     parts.append(t("fake_ok_bits", bits=check.claimed_bits))
+    # Said only where nothing found the rate wanting; otherwise the file has
+    # its own line in the other group saying how far it really goes.
+    if check.content_hz and not check.wasteful:
+        parts.append(t("bw_ok", khz=f"{check.content_hz / 1000:g}"))
     return [", ".join(parts)]
 
 
-def fake_lines(check: FakeCheck) -> list:
+def bandwidth_lines(check: Inspection) -> list:
+    """The one line saying how far a file's music reaches, and what would hold it.
+
+    The level is worded the way each finding is actually read: a floor is
+    quoted as a depth below the music, because that is what makes it a floor,
+    while shaping keeps its sign - the whole point of the Cyndi Lauper
+    transfer here is that its ultrasound is ELEVEN dB LOUDER than the music.
+    """
+    key = "bw_" + check.content_why
+    extra = {"db": f"{-check.ultra_level_db:.0f}"}
+    if check.content_why == "shaping":
+        extra = {"db": f"{check.ultra_level_db:+.0f}",
+                 "peak": f"{check.ultra_peak_hz / 1000:g}"}
+    elif check.content_why == "quiet":
+        extra = {"db": f"{BW_QUIET_DB:.0f}"}
+    return [t(key, khz=f"{check.content_hz / 1000:g}",
+              rate=f"{check.enough_rate / 1000:g} kHz", **extra)]
+
+
+def fake_lines(check: Inspection) -> list:
     """One translated line per lie the file tells. Empty if it is honest."""
     lines = []
     if check.lossy_source:
@@ -1937,7 +2095,7 @@ class Analysis:
     subset_fixable: list = field(default_factory=list)
     subset_inherent: list = field(default_factory=list)
     damage: Damage | None = None
-    fake: FakeCheck | None = None
+    inspection: Inspection | None = None
     partial: bool = False        # rewritten since, deep data no longer valid
 
     @property
@@ -1977,7 +2135,7 @@ class Analysis:
         """Worth printing without --all."""
         return bool(self.weak or self.subset_fixable or self.subset_inherent
                     or self.info.error
-                    or (self.fake and self.fake.suspicious))
+                    or (self.inspection and self.inspection.suspicious))
 
 
 def blocksizes_for_rate(sample_rate: int) -> tuple:
@@ -2111,7 +2269,7 @@ class Report:
 #: itself, offsets that are read from disk anyway, and the band table, which
 #: is far bigger than the verdict drawn from it.
 NOT_STORED = {FlacInfo: {"streaminfo_offset"}, Damage: {"info"},
-              FakeCheck: {"path", "bands"}, Report: {"path"}}
+              Inspection: {"path", "bands"}, Report: {"path"}}
 
 #: Fields that need more than a plain JSON value on the way back.
 REVIVE = {"md5": bytes.fromhex, "severity": Severity,
@@ -2162,8 +2320,8 @@ def _analysis_from_json(d: dict) -> Analysis:
     item = from_json(Analysis, d, info=info)
     if raw := d.get("damage"):
         item.damage = from_json(Damage, raw, info=info)
-    if raw := d.get("fake"):
-        item.fake = from_json(FakeCheck, raw, path=info.path)
+    if raw := d.get("inspection"):
+        item.inspection = from_json(Inspection, raw, path=info.path)
     return item
 
 
@@ -2476,8 +2634,11 @@ def print_file_report(item: Analysis, root: str) -> None:
             if issues:
                 print(f"        {t(note)}")
 
-    if item.fake and item.fake.suspicious:
-        for line in fake_lines(item.fake):
+    if item.inspection and item.inspection.wasteful:
+        for line in bandwidth_lines(item.inspection):
+            print(f"   {line}")
+    if item.inspection and item.inspection.suspicious:
+        for line in fake_lines(item.inspection):
             print("   🎭 " + line)
     print()
 
@@ -2525,6 +2686,14 @@ def print_fakes(checks: Sequence, root: str, blank: bool = True) -> None:
                 footer=t("fake_caveat"), blank=blank)
 
 
+def print_wasteful(checks: Sequence, root: str) -> None:
+    """Files carrying less music than their sample rate is paying for."""
+    print_group(t("bw_header", count=files(len(checks))),
+                [(rel(c.path, root), bandwidth_lines(c))
+                 for c in sorted(checks, key=lambda c: c.path)],
+                footer=t("bw_caveat"), blank=False)
+
+
 def print_honest(checks: Sequence, root: str) -> None:
     """Files that turned out to be what their header claims."""
     print_group(t("fake_ok_header", count=files(len(checks))),
@@ -2561,8 +2730,8 @@ def print_findings(report: Report, show_all: bool) -> None:
         print_group(t("nomd5_header", count=files(len(found))),
                     [(rel(a.info.path, root), []) for a in found])
 
-    if found := [a for a in report.items if a.fake and a.fake.suspicious]:
-        print_fakes([a.fake for a in found], root)
+    if found := [a for a in report.items if a.inspection and a.inspection.suspicious]:
+        print_fakes([a.inspection for a in found], root)
 
 
 #: The symbol each status is announced with. Two characters wide throughout,
@@ -2761,7 +2930,7 @@ def adopt_new_files(report: Report, jobs: int,
     return items
 
 
-def refresh_entry(item: Analysis, keep_fake: bool) -> None:
+def refresh_entry(item: Analysis, keep_inspection: bool) -> None:
     """Update one entry after its file was rewritten.
 
     Only the header is read again - re-running the deep analysis here would
@@ -2769,7 +2938,7 @@ def refresh_entry(item: Analysis, keep_fake: bool) -> None:
     both the listing and the next `analyze` know the stream itself has not
     been looked at since.
     """
-    fake = item.fake if keep_fake else None
+    kept = item.inspection if keep_inspection else None
     try:
         info = read_flac_metadata(item.info.path)
     except (OSError, ValueError) as e:
@@ -2782,7 +2951,7 @@ def refresh_entry(item: Analysis, keep_fake: bool) -> None:
     item.subset_fixable = fresh.subset_fixable
     item.subset_inherent = fresh.subset_inherent
     item.damage = None
-    item.fake = fake
+    item.inspection = kept
     item.partial = True
 
 
@@ -2815,7 +2984,8 @@ def summary_rows(report: Report) -> list:
          ("sum_no_md5", count(lambda a: a.no_md5)),
          ("sum_subset_fix", count(lambda a: a.subset_fixable)),
          ("sum_subset_keep", count(lambda a: a.subset_inherent)),
-         ("sum_fake", count(lambda a: a.fake and a.fake.suspicious))))
+         ("sum_fake", count(lambda a: a.inspection and a.inspection.suspicious)),
+         ("sum_waste", count(lambda a: a.inspection and a.inspection.wasteful))))
 
 
 def report_advice(report: Report, args) -> list:
@@ -2833,8 +3003,8 @@ def report_advice(report: Report, args) -> list:
               or (a.subset_fixable and not a.info.error)]
     weak = [a for a in report.items if not a.info.error and a.weak]
     inherent = [a for a in report.items if a.subset_inherent]
-    unchecked = [a for a in report.items if not a.unreadable and not a.fake]
-    lying = [a for a in report.items if a.fake and a.fake.suspicious]
+    unchecked = [a for a in report.items if not a.unreadable and not a.inspection]
+    lying = [a for a in report.items if a.inspection and a.inspection.suspicious]
 
     if broken:
         advice.append(t("adv_repair", cmd=command_hint("repair", root),
@@ -2845,7 +3015,7 @@ def report_advice(report: Report, args) -> list:
                         count=files(len(weak)),
                         eta=estimate(size, ENCODE_RATE, JOBS)))
     # An entry can sit in the report without ever having been decoded: taken
-    # in by find-fake or reencode, or rewritten since. Only analyze fills it
+    # in by inspect or reencode, or rewritten since. Only analyze fills it
     # in, and until it does, "nothing found" means "nothing looked at".
     if shallow := [a for a in report.items if a.partial and not a.info.error]:
         advice.append(t("adv_partial", cmd=command_hint("analyze", root),
@@ -2862,7 +3032,7 @@ def report_advice(report: Report, args) -> list:
         advice.append(t("adv_fake", count=files(len(lying))))
     if unchecked:
         size = sum(a.info.file_size for a in unchecked)
-        advice.append(t("adv_findfake", cmd=command_hint("find-fake", root),
+        advice.append(t("adv_inspect", cmd=command_hint("inspect", root),
                         eta=estimate(size, FAKE_RATE, JOBS)))
     return advice
 
@@ -2874,7 +3044,7 @@ def has_findings(report: Report) -> bool:
     would be a verdict on a file nobody has looked at.
     """
     return any(a.weak or a.subset_fixable or a.subset_inherent or a.info.error
-               or a.partial or a.no_md5 or (a.fake and a.fake.suspicious)
+               or a.partial or a.no_md5 or (a.inspection and a.inspection.suspicious)
                for a in report.items)
 
 
@@ -2959,7 +3129,7 @@ def cmd_show(args) -> int:
     return 0
 
 
-def cmd_find_fake(args) -> int:
+def cmd_inspect(args) -> int:
     """Separate analysis: is the file what its header claims?
 
     Three lies are looked for - a lossy source, upsampled hi-res and a bit
@@ -3009,18 +3179,18 @@ def cmd_find_fake(args) -> int:
     # A stored result still describes a file that has not moved a byte since,
     # which is the same test analyze uses to reuse its own work.
     todo = [a for a in targets
-            if args.force or not (a.fake and matches_disk(a.info))]
+            if args.force or not (a.inspection and matches_disk(a.info))]
     if report and not args.force:
         print("  " + t("rp_reused", count=len(targets) - len(todo),
                        fresh=len(todo)))
 
     if todo:
         measured = run_parallel(t("fake_running", count=len(todo)),
-                                [a.info for a in todo], check_fake_source,
+                                [a.info for a in todo], inspect_audio,
                                 JOBS, weight=_by_size, cpu_bound=True)
         for item, res in zip(todo, measured):
-            item.fake = res
-    results = [a.fake for a in targets if a.fake]
+            item.inspection = res
+    results = [a.inspection for a in targets if a.inspection]
     found = [r for r in results if r.suspicious]
 
     print()
@@ -3031,6 +3201,12 @@ def cmd_find_fake(args) -> int:
 
     # The blank line is the group's own: every other section here is printed
     # tight against the one before it, and this one can run for pages.
+    if wasteful := [r for r in results if r.wasteful and not r.error]:
+        print()
+        print_wasteful(wasteful, args.folder)
+    elif not found:
+        print(t("bw_none"))
+
     if args.all and (honest := [r for r in results
                                 if not r.suspicious and not r.error]):
         print()
@@ -3092,7 +3268,7 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
             # Salvaging and converting rewrite the audio, so only there does
             # the stored spectral check stop describing the file.
             refresh_entry(by_path[res.info.path],
-                          keep_fake=res.kind not in (Kind.SALVAGE, Kind.CONVERT))
+                          keep_inspection=res.kind not in (Kind.SALVAGE, Kind.CONVERT))
             changed += 1
 
     print_table(summary(results))
@@ -3489,11 +3665,11 @@ def cmd_drop_originals(args) -> int:
     return 0
 
 
-COMMANDS = {"analyze": cmd_analyze, "show": cmd_show, "find-fake": cmd_find_fake,
+COMMANDS = {"analyze": cmd_analyze, "show": cmd_show, "inspect": cmd_inspect,
             "reencode": cmd_reencode, "repair": cmd_repair,
             "revert-original": cmd_revert_original,
             "drop-originals": cmd_drop_originals}
-NEEDS_FLAC = {"analyze", "find-fake", "reencode", "repair"}
+NEEDS_FLAC = {"analyze", "inspect", "reencode", "repair"}
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -3547,10 +3723,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(show)
     show.add_argument("--all", action="store_true", help=t("cli_all"))
 
-    find_fake = subparsers.add_parser("find-fake", help=t("cli_cmd_findfake"))
-    _add_common(find_fake)
-    find_fake.add_argument("--all", action="store_true", help=t("cli_all"))
-    find_fake.add_argument("--force", action="store_true", help=t("cli_force"))
+    inspect = subparsers.add_parser("inspect", help=t("cli_cmd_inspect"))
+    _add_common(inspect)
+    inspect.add_argument("--all", action="store_true", help=t("cli_all"))
+    inspect.add_argument("--force", action="store_true", help=t("cli_force"))
 
     reencode = subparsers.add_parser("reencode", help=t("cli_cmd_reencode"))
     _add_common(reencode)
