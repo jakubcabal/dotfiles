@@ -332,6 +332,8 @@ adv_was_dry     | Bylo to nanečisto. Spusť totéž bez --dry-run.             
 adv_failed      | U selhaných zůstaly originály; zkontroluj práva a volné místo. | Originals of the failed files are untouched; check permissions and free space.
 adv_subset_keep | {count} mimo subset nelze opravit beze ztráty, viz výš.    | {count} outside the subset cannot be fixed losslessly, see above.
 adv_reanalyze   | Report je aktualizovaný; pro plný obraz spusť analyze znovu. | The report is updated; run analyze again for the full picture.
+adv_stale       | {cmd}  ({count} z reportu chybí na disku)                   | {cmd}  ({count} of the report are no longer on disk)
+adv_partial     | {cmd}  ({count} zatím bez hloubkové analýzy)                | {cmd}  ({count} not deeply analysed yet)
 
 # --- files that lie about their quality --------------------------------
 fake_unusable  | stopa je příliš krátká nebo tichá                          | the track is too short or too quiet
@@ -2661,6 +2663,12 @@ def summary_rows(report: Report) -> list:
 def report_advice(report: Report, args) -> list:
     """The one command that makes sense next."""
     root, advice = report.root, []
+    # Everything below is read out of the report, so a report describing files
+    # that are not there any more has to be said first - it makes every other
+    # line of advice fiction. Only `analyze` rebuilds it from the folder.
+    if gone := [a for a in report.items if not os.path.exists(a.info.path)]:
+        advice.append(t("adv_stale", cmd=command_hint("analyze", root),
+                        count=files(len(gone))))
     # repair fixes defects, reencode saves space - two different questions.
     broken = [a for a in report.items
               if a.really_damaged or a.harmless
@@ -2678,6 +2686,12 @@ def report_advice(report: Report, args) -> list:
         advice.append(t("adv_reencode", cmd=command_hint("reencode", root),
                         count=files(len(weak)),
                         eta=estimate(size, ENCODE_RATE, args.jobs)))
+    # An entry can sit in the report without ever having been decoded: taken
+    # in by find-fake or reencode, or rewritten since. Only analyze fills it
+    # in, and until it does, "nothing found" means "nothing looked at".
+    if shallow := [a for a in report.items if a.partial and not a.info.error]:
+        advice.append(t("adv_partial", cmd=command_hint("analyze", root),
+                        count=files(len(shallow))))
     if inherent:
         advice.append(t("adv_subset_keep", count=files(len(inherent))))
     if lying:
@@ -2689,10 +2703,20 @@ def report_advice(report: Report, args) -> list:
     return advice
 
 
+def has_findings(report: Report) -> bool:
+    """Is there anything in the report worth acting on?
+
+    A partial entry counts: it has never been decoded, so calling it clean
+    would be a verdict on a file nobody has looked at.
+    """
+    return any(a.weak or a.subset_fixable or a.subset_inherent or a.info.error
+               or a.partial or (a.fake and a.fake.suspicious)
+               for a in report.items)
+
+
 def print_outcome(report: Report, args) -> None:
     """Verdict first, then the one command that makes sense next."""
-    if not any(a.weak or a.subset_fixable or a.subset_inherent or a.info.error
-               or (a.fake and a.fake.suspicious) for a in report.items):
+    if not has_findings(report):
         print("\n" + t("adv_clean"))
     print_advice(report_advice(report, args))
 
