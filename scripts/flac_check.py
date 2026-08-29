@@ -147,11 +147,13 @@ MIN_PYTHON = (3, 8)
 MIN_FLAC = (1, 3, 0)
 #: Bumped to 4 when the spectral measurement changed: the cliff ceiling became
 #: relative to the file's Nyquist and the ultrasound bands became swept cells
-#: rather than single probes. Stored inspections were measured by the old one
-#: and `inspect` reuses them for any file that has not moved a byte, so
-#: without this a library would answer half in the new numbers and half in the
-#: old, with nothing on screen saying which was which.
-REPORT_VERSION = 4
+#: rather than single probes. To 5 when the bandwidth reading gained the step
+#: (see BW_STEP_DB), which reads the same bands to a different answer. Stored
+#: inspections were measured and judged by the old ones, and `inspect` reuses
+#: them for any file that has not moved a byte, so without this a library
+#: would answer half in the new numbers and half in the old, with nothing on
+#: screen saying which was which.
+REPORT_VERSION = 5
 
 # --------------------------------------------------------------------------
 # Languages
@@ -419,6 +421,7 @@ fake_ok_bits   | vzorky využívají všech {bits} bitů                        
 bw_header    | 📐 VYŠŠÍ FREKVENCE, NEŽ HUDBA POTŘEBUJE ({count}):                                           | 📐 A HIGHER SAMPLE RATE THAN THE MUSIC NEEDS ({count}):
 bw_floor     | hudba končí na {khz} kHz, nad tím ploché šumové dno {db} dB pod ní - stačilo by {rate}      | the music ends at {khz} kHz, above it a flat noise floor {db} dB below it - {rate} would hold it
 bw_shaping   | hudba končí na {khz} kHz, nad tím tvarovaný šum ({db} dB na {peak} kHz) - stačilo by {rate} | the music ends at {khz} kHz, above it shaped noise ({db} dB at {peak} kHz) - {rate} would hold it
+bw_step      | hudba končí na {khz} kHz, nad tím jen zbytky {db} dB pod ní - stačilo by {rate}             | the music ends at {khz} kHz, above it only remnants {db} dB below it - {rate} would hold it
 bw_quiet     | hudba slábne do {khz} kHz, výš je přes {db} dB pod ní - stačilo by {rate}                   | the music fades out by {khz} kHz, above that it is over {db} dB below it - {rate} would hold it
 bw_caveat    | Nic to neopravuje, jen šetří místo, a je to nevratný přepočet - originál si nech.           | This fixes nothing, it only saves space, and it is an irreversible recompute - keep the original.
 bw_none      | Žádný soubor nenese míň, než na kolik je nastavený.                                         | No file carries less than its sample rate is set for.
@@ -1471,7 +1474,7 @@ ULTRA_JITTER = 0.6180339887498949
 # anything is IN them. A 192 kHz file whose music stops at 22 kHz is not
 # dishonest, it is four times larger than it needs to be.
 #
-# Three ways the ultrasound gives itself away as something other than music,
+# Four ways the ultrasound gives itself away as something other than music,
 # and a file is only ever accused when one of them can be pointed at:
 #
 #   it climbs    Nothing acoustic gains energy with frequency. A spectrum
@@ -1479,12 +1482,14 @@ ULTRA_JITTER = 0.6180339887498949
 #                a requantisation - and everything from the turn up is that.
 #   it goes flat A converter's noise floor is featureless. Where the spectrum
 #                settles and stays settled, the music has already stopped.
-#   it fades     Neither of those, but the level has fallen so far under the
+#   it steps     It falls off a step too steep to be acoustic and never
+#                climbs back over it. What trails away above is a tail.
+#   it fades     None of those, but the level has fallen so far under the
 #                audible band that no rate change could lose anything.
 #
 # Measured on 43 hi-res files (96, 176.4 and 192 kHz) and 9 upsampled ones.
 # The first two need no threshold worth arguing about - the shape decides -
-# and they carried 33 of the 43. Only the third rests on a chosen number.
+# and they carried 33 of the 43. The other two rest on a chosen number.
 # --------------------------------------------------------------------------
 
 BW_FROM = 20000              # the question is only ever about ultrasound
@@ -1521,6 +1526,31 @@ BW_EDGE_SPAN = 2             # refined bands each side of the boundary
 #: shaped transfer keeps 75 % of them up, a lone ultrasonic partial 13 to
 #: 26 %, and a local wiggle in an honest transfer 23 %.
 BW_SHAPED_SHARE = 0.5
+
+#: How far the spectrum has to fall between two neighbouring bands before the
+#: fall is read as the end of the music rather than its roll-off. The other
+#: three readings all describe what sits ABOVE the music, and a transfer whose
+#: noise tail merely slopes away answers to none of them: it is not flat, it
+#: never climbs, and it never gets BW_QUIET_DB down. What it does have is a
+#: step nothing acoustic makes - 10 dB in 500 Hz is a 400 dB per octave
+#: roll-off, which is a filter and not an instrument. The example is a 96 kHz
+#: transfer of a 1988 album: ten of its eleven hi-res tracks fall 10.4 to
+#: 18.2 dB across the one step at 20.5 kHz and then trail off, 29 to 42 dB
+#: under the music, to Nyquist. Every reading above missed all ten.
+#:
+#: Unlike the shape readings this one IS a chosen number, and the population
+#: it is chosen out of has no gap to hide in: of 112 hi-res files here 25 have
+#: a step of 6 dB or more, 16 reach 10 and 7 reach 14. What 10 buys is that
+#: the files just under it - 9.4, 9.3, 8.8 dB - are ones already caught by the
+#: floor or ones whose spectrum genuinely runs on, while from 6 to 10 the list
+#: is honest wideband transfers. Raising it loses whole albums; lowering it
+#: starts charging roll-offs that are merely steep.
+#:
+#: Only neighbours BW_EDGE_STEP apart are compared, so the test reads a slope
+#: and not an artefact of the grid: that is the 500 Hz fine grid up to
+#: LOSSY_BAND_TO, and the refined bands _edge_bands puts around the 88.2 and
+#: 96 kHz rungs. The 2000 Hz ultrasound bands are far too coarse to ask.
+BW_STEP_DB = 10.0
 
 #: Cutoff -> likely source. Ranges, not exact figures: what is detected is the
 #: last band BEFORE the cliff, so the real cutoff sits a little higher, and
@@ -1916,6 +1946,26 @@ def _find_bandwidth(result: Inspection, rate: int) -> None:
             edge = max((g for g in up if g < f
                         and result.bands[g] > level + BW_EDGE_DB), default=f)
             hits["floor"] = (edge, level, 0)
+            break
+
+    # It steps down, and what is left above the step never climbs back over
+    # it. Nothing acoustic falls BW_STEP_DB in 500 Hz, so the step is the end
+    # of the music whatever put it there - the tape's own bandwidth, the desk,
+    # the converter in front of the transfer. This is the reading for the file
+    # that has a LITTLE something up there: not flat enough to be a floor, not
+    # quiet enough to have faded, and still not worth the samples it costs.
+    #
+    # The quoted level is the median of the whole tail rather than the band
+    # just under the step, because that is the depth the tail actually sits
+    # at, and because it is what the content guard below measures against.
+    for prev, f in zip(up, up[1:]):
+        if f - prev > BW_EDGE_STEP or f == up[-1]:
+            continue
+        if result.bands[prev] - result.bands[f] < BW_STEP_DB:
+            continue
+        tail = [result.bands[g] for g in up if g >= f]
+        if max(tail) <= result.bands[f] + BW_EDGE_DB:
+            hits["step"] = (prev, statistics.median(tail), 0)
             break
 
     # It fades out from under the audible band.
