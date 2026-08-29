@@ -293,6 +293,9 @@ rc_conv_num     | {count} se převede, zbytek se jen překóduje                
 rc_warn_up      | {count} k převzorkování NAHORU - mezi vzorky není co doplnit         | {count} to be resampled UP - there is nothing to put between the samples
 rc_warn_family  | {count} přes hranici rodin 44,1 a 48 kHz - zbytečný přepočet         | {count} crossing between the 44.1 and 48 kHz families - a recompute for nothing
 rc_warn_bits    | {count} k navýšení hloubky - přibudou jen prázdné bity               | {count} to be given more bits - only empty bits are added
+rc_down_only    | jen dolů: co by se mělo zvednout, zůstane ve svém formátu            | down only: whatever would be raised is left in its own format
+rc_down_left    | {count} beze změny formátu, šlo by jen nahoru                        | {count} kept in their own format, the target is only above them
+rc_down_alone   | --downgrade sám neurčuje nic, přidej --sample-rate nebo --bits       | --downgrade decides nothing on its own, add --sample-rate or --bits
 rc_conv_warn    | Zvuk se PŘEPOČÍTÁ, není to bezeztrátové.                             | The audio is RECOMPUTED, this is not lossless.
 rc_conv_meta    | Tagy i obal zůstanou, cuesheet ne: odkazuje na vzorky, a ty se mění. | Tags and cover art are kept, the cuesheet is not: it indexes samples, and those change.
 rc_conv_done    | {oldfmt} → {newfmt}, {old} → {new} ({change})                        | {oldfmt} → {newfmt}, {old} → {new} ({change})
@@ -435,6 +438,7 @@ cli_dry_run      | nic nezapisovat, jen spočítat výsledek                    
 cli_yes          | neptat se na potvrzení                                                                                   | do not ask for confirmation
 cli_sample_rate  | cílová vzorkovací frekvence v Hz (např. 48000), jinak beze změny                                         | target sample rate in Hz (e.g. 48000), otherwise left as it is
 cli_bits         | cílová bitová hloubka (16, 24, 32), jinak beze změny                                                     | target bit depth (16, 24, 32), otherwise left as it is
+cli_downgrade    | převádět jen dolů, soubory pod cílovou hodnotou nechat být                                               | convert downwards only, leave the files already below the target alone
 cli_no_keep_orig | neodkládat originál jako *{suffix} ani tam, kde se mění zvuk                                             | do not put the original aside as *{suffix}, not even where the audio changes
 cli_force        | analyzovat vše znovu, i beze změny od minule                                                             | re-analyse everything, even what has not changed
 cli_cmd_analyze  | projít složku a uložit report (dekóduje, pomalé)                                                         | scan the folder and store a report (decodes, slow)
@@ -3480,9 +3484,31 @@ def run_write_command(args, report: Report, targets: Sequence, nothing: str,
 
 def target_format(info: FlacInfo, args) -> tuple:
     """(rate, bits) the file is meant to end up in. What the user did not ask
-    about stays as it is, so `--bits 16` alone never touches a sample rate."""
-    return (args.sample_rate or info.sample_rate,
-            args.bits or info.bits_per_sample)
+    about stays as it is, so `--bits 16` alone never touches a sample rate.
+
+    --downgrade is applied right here, and to each half on its own, which is
+    the whole reason it is a clamp and not a filter over files. The two halves
+    are two independent asks: `--sample-rate 48000 --bits 16` against a
+    44.1 kHz / 24 bit file says "the rate is already below, leave it" and "yes,
+    take the depth down". Declining the file whole would throw away the half
+    that was worth doing, and declining it in the target is what makes every
+    count, warning and decision downstream come out right without knowing the
+    option exists - a file left at its own format simply needs no conversion.
+    """
+    rate = args.sample_rate or info.sample_rate
+    bits = args.bits or info.bits_per_sample
+    if getattr(args, "downgrade", False):
+        rate = min(rate, info.sample_rate)
+        bits = min(bits, info.bits_per_sample)
+    return rate, bits
+
+
+def would_raise(info: FlacInfo, args) -> bool:
+    """Would the asked-for format lift this file's rate or depth? That is the
+    half --downgrade declines, and it is worth counting out loud: a run that
+    quietly left most of a folder alone otherwise looks like a broken run."""
+    return ((args.sample_rate or 0) > info.sample_rate
+            or (args.bits or 0) > info.bits_per_sample)
 
 
 def needs_conversion(info: FlacInfo, args) -> bool:
@@ -3551,6 +3577,11 @@ def cmd_reencode(args) -> int:
     different audio. Everything already in the wanted format is re-encoded as
     always, and the original is therefore put aside only for what was really
     converted.
+
+    --downgrade narrows that to the direction that can actually pay: a folder
+    of mixed rates asked for 48 kHz has some files above it and some below,
+    and only the ones above have anything to give up. The ones below are left
+    in their own format instead of being resampled up into invented samples.
     """
     report = require_report(args)
     if report is None:
@@ -3559,6 +3590,9 @@ def cmd_reencode(args) -> int:
             args.sample_rate > 0 and rate_is_codable(args.sample_rate)):
         print(t("run_error", problem=t("rc_conv_bad", rate=args.sample_rate)),
               file=sys.stderr)
+        return 2
+    if args.downgrade and not converting(args):
+        print(t("run_error", problem=t("rc_down_alone")), file=sys.stderr)
         return 2
 
     # The report already lists every file of the folder, the clean ones
@@ -3587,6 +3621,13 @@ def cmd_reencode(args) -> int:
                 lines.append(t("rc_conv_dither"))
             if turning < len(live):
                 lines.append(t("rc_conv_num", count=files(turning)))
+        # Said whenever the option is on, converting or not: "nothing to do"
+        # after asking for a conversion is a result, and it needs its reason.
+        if args.downgrade:
+            lines.append(t("rc_down_only"))
+            if spared := sum(1 for a in live if would_raise(a.info, args)
+                             and not needs_conversion(a.info, args)):
+                lines.append(t("rc_down_left", count=files(spared)))
         if args.all:
             lines.append(t("rc_all_any"))
             if added:
@@ -3930,6 +3971,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help=t("cli_sample_rate"))
     reencode.add_argument("--bits", type=int, choices=sorted(RAW_FORMATS),
                           help=t("cli_bits"))
+    reencode.add_argument("--downgrade", action="store_true",
+                          help=t("cli_downgrade"))
 
     repair = subparsers.add_parser("repair",
                                    help=t("cli_cmd_repair", suffix=ORIG_SUFFIX))
