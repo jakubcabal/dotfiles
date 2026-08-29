@@ -145,7 +145,13 @@ from typing import BinaryIO, Callable, Sequence
 
 MIN_PYTHON = (3, 8)
 MIN_FLAC = (1, 3, 0)
-REPORT_VERSION = 3
+#: Bumped to 4 when the spectral measurement changed: the cliff ceiling became
+#: relative to the file's Nyquist and the ultrasound bands became swept cells
+#: rather than single probes. Stored inspections were measured by the old one
+#: and `inspect` reuses them for any file that has not moved a byte, so
+#: without this a library would answer half in the new numbers and half in the
+#: old, with nothing on screen saying which was which.
+REPORT_VERSION = 4
 
 # --------------------------------------------------------------------------
 # Languages
@@ -1385,6 +1391,19 @@ def convert_file(info: FlacInfo, rate: int, bits: int,
 #
 # What still gets through: AAC from about 192 kbps up, which no longer cuts
 # the band at all (measured 15 dB - indistinguishable from the original).
+#
+# Two of those thresholds were later found to be guarding the wrong ground,
+# neither of them by being the wrong number:
+#
+#   the cliff ceiling was fixed at 20 kHz, which is CD Nyquist's roll-off and
+#   nobody else's, so a 48 kHz file could carry a 95 dB wall at 21 kHz - the
+#   AAC and Opus cut - and be called honest. It is a fraction of the file's
+#   own rate now; see LOSSY_CLIFF_TO.
+#
+#   the ultrasound was sampled at one narrow probe per 2000 Hz, which reads
+#   3 to 6 % of the band it claims to measure, so a genuine partial between
+#   two probes was read as arithmetic silence and its file called upsampled.
+#   Each band now sweeps its own cell; see ULTRA_JITTER.
 # --------------------------------------------------------------------------
 
 LOSSY_CLIFF_DB = 40.0        # cliff from which it looks like a codec
@@ -1392,8 +1411,20 @@ LOSSY_CLIFF_SPAN = 2         # the fall may spread over this many bands
 LOSSY_BAND_STEP = 500        # spacing of the measured bands, Hz
 LOSSY_BAND_FROM = 14000      # below this codecs do not cut
 LOSSY_BAND_TO = 25000        # fine bands end here
-LOSSY_CLIFF_TO = 20000       # above this a fall is the natural roll-off
-                             # towards CD Nyquist, not a codec
+#: Above this a fall is the file's own roll-off towards Nyquist, not a codec.
+#: 20 kHz is right for CD rate and for nothing else: in a 48 kHz file Nyquist
+#: is at 24 kHz, so 20-22 kHz is perfectly measurable spectrum - and it is
+#: exactly where AAC and Opus cut. Measured: a 95 dB brick wall at 21 kHz in a
+#: 48 kHz file scored 7.5 dB against the flat 20 kHz ceiling (invisible) and
+#: 95.3 dB once the ceiling followed the rate.
+#: Scaled from 44100 rather than from Nyquist so that CD rate reproduces this
+#: number exactly, and every file already measured keeps the answer it had.
+LOSSY_CLIFF_TO = 20000       # the ceiling at 44.1 kHz, scaled from there
+LOSSY_CLIFF_CAP = 22500      # ... but no codec cuts above this, at any rate
+#: A wall standing this far up its source's Nyquist is the resampler's own,
+#: and the upsampling charge already accounts for it. Resamplers pass 0.90 to
+#: 0.95 of Nyquist (soxr's default is 0.913), so this sits just under them.
+LOSSY_WALL_NYQUIST = 0.88
 LOSSY_WINDOW = 4096          # Goertzel window length
 LOSSY_WINDOW_STRIDE = 8      # every Nth window is taken
 LOSSY_FLOOR_DB = -100.0      # below this it is only numerical noise
@@ -1405,6 +1436,27 @@ ULTRA_SPAN_DB = 30.0         # but only if it is also featureless: more spread
                              # than this means something is up there
 ULTRA_EDGE_DB = 20.0         # a band this far above the floor still has content
 ULTRA_MIN_RATE = 48000       # only files claiming more than this are checked
+
+#: A Goertzel over a Blackman-Harris window is a NARROW probe, not a band: a
+#: tone reads within 6 dB of its true level only +-32 Hz away at 96 kHz, +-64
+#: at 192. On a 2000 Hz spacing that is 3 to 6 % of the ultrasound actually
+#: looked at, and the other 94 % was assumed to hold whatever the probes hit.
+#: Measured: a 35 kHz tone at -26 dBFS in a 192 kHz file was invisible - the
+#: file was called upsampled and its rate wasted - while the same tone at
+#: 36 kHz, sitting on a probe, read -7 dB.
+#:
+#: Four times the probes would have cost four times the run time, so instead
+#: each coarse band is probed at a DIFFERENT frequency inside its own cell in
+#: every window. The energy summed over a track's hundreds of windows is then
+#: the average across the cell rather than one point of it: same cost, whole
+#: band covered. The offsets walk by the golden ratio because that spreads
+#: evenly at every prefix length - a short track still gets even coverage of
+#: the windows it did have.
+#:
+#: The fine bands are deliberately left as exact point probes: the cliff
+#: thresholds above were calibrated on them, and averaging across 500 Hz would
+#: soften the very edge they measure.
+ULTRA_JITTER = 0.6180339887498949
 
 # --------------------------------------------------------------------------
 # IS THE SAMPLE RATE WORTH ITS SIZE
@@ -1447,6 +1499,24 @@ BW_PASSBAND = 0.49
 #: The rates worth being asked to drop to, per family. 22.05 and lower are not
 #: offered: no one wants them, and nothing in a library is measured that low.
 BW_LADDER = {11025: (44100, 88200, 176400), 8000: (48000, 96000, 192000)}
+
+#: The grid is refined to this spacing around a rung of the ladder that falls
+#: in the coarse region. The whole 96-versus-192 decision used to rest on the
+#: two probes at 46 and 48 kHz - a 2000 Hz quantisation guarding a boundary at
+#: 47040 Hz, against the 960 Hz of margin BW_PASSBAND leaves. Below
+#: LOSSY_BAND_TO the fine grid already resolves those rungs to 500 Hz, so only
+#: the 88.2 and 96 kHz ones need this.
+BW_EDGE_STEP = 500
+BW_EDGE_SPAN = 2             # refined bands each side of the boundary
+
+#: What share of the bands above the turn have to have come up with it before
+#: a climb counts as a shaped floor rather than one loud partial. Not a second
+#: height threshold - the peak that fires the test is at BW_RISE_DB by
+#: definition, so nothing above it can be asked for. Width is the whole
+#: question, and it separates cleanly: measured across this library, a real
+#: shaped transfer keeps 75 % of them up, a lone ultrasonic partial 13 to
+#: 26 %, and a local wiggle in an honest transfer 23 %.
+BW_SHAPED_SHARE = 0.5
 
 #: Cutoff -> likely source. Ranges, not exact figures: what is detected is the
 #: last band BEFORE the cliff, so the real cutoff sits a little higher, and
@@ -1598,6 +1668,29 @@ def _dead_bytes(raw: bytes, width: int, dead: int) -> int:
     return dead
 
 
+def _edge_bands(rate: int, top: float) -> dict:
+    """Extra probes around the rungs of the ladder that sit in the coarse grid.
+
+    `enough_rate` turns on whether the music stops below `r * BW_PASSBAND`, so
+    that boundary deserves better than the 2000 Hz spacing the ultrasound is
+    otherwise swept at. Only the rungs above LOSSY_BAND_TO need it; the ones
+    below are already standing on the 500 Hz fine grid.
+    """
+    ladder = BW_LADDER.get(rate_family(rate), BW_LADDER[8000])
+    bands = {}
+    for rung in ladder:
+        if rung >= rate:
+            continue
+        centre = round(rung * BW_PASSBAND / BW_EDGE_STEP) * BW_EDGE_STEP
+        for step in range(-BW_EDGE_SPAN, BW_EDGE_SPAN + 1):
+            f = centre + step * BW_EDGE_STEP
+            # Never below LOSSY_BAND_TO: down there the fine bands own the
+            # frequency, and they have to stay exact point probes.
+            if LOSSY_BAND_TO < f < top:
+                bands[f] = BW_EDGE_STEP
+    return bands
+
+
 def inspect_audio(info: FlacInfo) -> Inspection:
     """Look for the marks of a lossy source, upsampling and a padded depth."""
     result = Inspection(path=info.path, claimed_rate=info.sample_rate,
@@ -1615,7 +1708,15 @@ def inspect_audio(info: FlacInfo) -> Inspection:
         result.error = "fake_unusable"
         return result
 
-    energy = {f: 0.0 for f in fine + coarse}
+    # Band -> the width of the cell it stands for, 0 for an exact point probe.
+    # The fine bands measure a frequency; everything above measures a stretch
+    # of spectrum, swept across the windows. See ULTRA_JITTER.
+    cells = {f: 0 for f in fine}
+    cells.update({f: ULTRA_STEP for f in coarse})
+    if coarse:
+        cells.update(_edge_bands(rate, top))
+
+    energy = {f: 0.0 for f in cells}
     reference = 0.0
     dead = width - 1              # low bytes still seen all zero everywhere
     windows = 0
@@ -1624,8 +1725,12 @@ def inspect_audio(info: FlacInfo) -> Inspection:
             windows += 1
             dead = _dead_bytes(raw, width, dead)
             reference += _goertzel(chunk, rate, 1000)
-            for f in energy:
-                energy[f] += _goertzel(chunk, rate, f)
+            # One offset per window, shared by every band, walking the whole
+            # cell over the track. Never leaves the cell, so a band still
+            # reports its own stretch of spectrum and nobody else's.
+            spread = (windows * ULTRA_JITTER % 1.0) - 0.5
+            for f, cell in cells.items():
+                energy[f] += _goertzel(chunk, rate, f + spread * cell)
     except OSError:
         result.error = "fake_unusable"
         return result
@@ -1638,25 +1743,67 @@ def inspect_audio(info: FlacInfo) -> Inspection:
     result.windows = windows
     result.bands = {f: 10 * math.log10(e / reference + 1e-30)
                     for f, e in energy.items()}
-    _find_cliff(result, fine)
+    _find_cliff(result, fine, rate)
     _find_upsampling(result, fine, coarse)
+    _blame_the_resampler(result)
     if coarse:
         _find_bandwidth(result, rate)
     return result
 
 
-def _find_cliff(result: Inspection, fine: list) -> None:
+def _blame_the_resampler(result: Inspection) -> None:
+    """One wall, one accusation: a resampler's cut is not a codec's.
+
+    Letting the cliff ceiling rise above 20 kHz brought a confusion with it.
+    Upsampling 44.1 kHz to 96 leaves a brick wall just under 22.05 kHz, and
+    that is indistinguishable from what MP3 at 320 kbps leaves behind - the
+    file would now be charged with both, and the lossy line would name a
+    bitrate nobody measured. Where the wall stands at the source's own
+    Nyquist, the upsampling already explains it and the lossy charge goes.
+
+    Only where they COINCIDE, though. An MP3 128 upsampled to 96 kHz walls at
+    16.5 kHz while its source Nyquist is 22.05, and that file really is guilty
+    of both - both lines are worth reading, and it keeps them.
+    """
+    if not (result.upsampled and result.lossy_source):
+        return
+    if result.cutoff_hz >= result.source_rate / 2 * LOSSY_WALL_NYQUIST:
+        result.cutoff_hz, result.cliff_db = 0, 0.0
+
+
+def _cliff_ceiling(rate: int) -> float:
+    """Above this a fall is the file's own roll-off, not a codec's brick wall.
+
+    Proportional to the rate, not a fixed 20 kHz. At CD rate the two agree,
+    and there the fixed number was right: 20 kHz is where a 44.1 kHz file runs
+    out of spectrum by itself. At 48 kHz it was simply wrong - the roll-off is
+    up at 24 kHz, 20 to 22 kHz is honest measurable band, and it is exactly
+    where AAC and Opus put their cut. Capped, because whatever the container's
+    rate, no codec cuts above LOSSY_CLIFF_CAP; a wall higher than that is a
+    resampler's, and _find_upsampling is the test that names it.
+
+    Scaled from 44100 and not from rate/2 on purpose: the ceiling has to come
+    out at exactly 20000 for a CD-rate file, so that the 44.1 kHz half of a
+    library - which this ceiling was never wrong about - keeps every number it
+    already had. A fraction of Nyquist lands a hair under and quietly drops
+    the 20 kHz band from the search.
+    """
+    return min(LOSSY_CLIFF_CAP, LOSSY_CLIFF_TO * rate / 44100)
+
+
+def _find_cliff(result: Inspection, fine: list, rate: int) -> None:
     """The brick wall a lossy codec leaves behind.
 
     The fall is measured over LOSSY_CLIFF_SPAN neighbouring bands, not one:
     an encoder's transition band is a few hundred Hz wide, so a single step
     catches only part of it and AAC slips through. Bands already at the
     numerical floor are not compared - a "drop" there is just noise - and a
-    fall starting above LOSSY_CLIFF_TO is ignored, because that is where a
-    CD-rate file naturally runs out of spectrum anyway.
+    fall starting above the ceiling is ignored, because that is where the file
+    naturally runs out of spectrum anyway.
     """
+    ceiling = _cliff_ceiling(rate)
     for i, f in enumerate(fine[:-1]):
-        if f > LOSSY_CLIFF_TO or result.bands[f] < LOSSY_FLOOR_DB:
+        if f > ceiling or result.bands[f] < LOSSY_FLOOR_DB:
             continue
         after = fine[i + 1: i + 1 + LOSSY_CLIFF_SPAN]
         if not after:
@@ -1713,6 +1860,11 @@ def _find_bandwidth(result: Inspection, rate: int) -> None:
     above it say. Nothing is claimed at all unless one of them fires - a file
     whose spectrum simply keeps going is a file whose rate is earned.
 
+    "Whatever the ones above it say" is true of the three READINGS and not of
+    the spectrum itself, which is why the edge is checked against the bands
+    afterwards: a reading that puts the music's end below something still
+    audibly loud has misread the file, not found its limit.
+
     Each hit carries the level worth quoting with it, because the same number
     means different things: for a floor it is the level of the flat stretch
     that identified it, for shaping the height of the hump.
@@ -1725,14 +1877,28 @@ def _find_bandwidth(result: Inspection, rate: int) -> None:
     hits = {}                        # why -> (edge, level to quote, peak)
 
     # It climbs. Nothing acoustic does, so the turn is the last place the
-    # music could still have been.
+    # music could still have been - but only where the whole floor climbed
+    # with it. A shaped floor is BROAD: it turns and stays up all the way to
+    # Nyquist. One band this high is a partial - a cymbal, a string's upper
+    # harmonic, a resonance - and that is music, not a floor to be cut away.
+    # Once the ultrasound stopped being sampled at a single point per 2000 Hz
+    # (see ULTRA_JITTER) such partials started landing in the bands, and
+    # without this each of them would have been read as noise shaping.
+    #
+    # The share above the turn is what decides, never a second height: the
+    # peak that fires this test sits at BW_RISE_DB by definition, so asking
+    # for more height only rejects the gradual transfers this test exists for.
     low, turn = result.bands[up[0]], up[0]
     for f in up:
         if result.bands[f] < low:
             low, turn = result.bands[f], f
         elif result.bands[f] > low + BW_RISE_DB:
-            peak = max((g for g in up if g > turn), key=lambda g: result.bands[g])
-            hits["shaping"] = (turn, result.bands[peak], peak)
+            above = [result.bands[g] for g in up if g > turn]
+            raised = [v for v in above if v > low]
+            if len(raised) >= len(above) * BW_SHAPED_SHARE:
+                peak = max((g for g in up if g > turn),
+                           key=lambda g: result.bands[g])
+                hits["shaping"] = (turn, result.bands[peak], peak)
             break
 
     # It goes flat, and does so far enough down to be a converter's floor and
@@ -1757,6 +1923,33 @@ def _find_bandwidth(result: Inspection, rate: int) -> None:
         return
     result.content_why = min(hits, key=lambda k: hits[k][0])
     result.content_hz, level, peak = hits[result.content_why]
+
+    # The winning reading found the FIRST thing on the way up, and it can be
+    # wrong about everything above it: an ultrasonic partial sitting past the
+    # flat stretch that "proved" the music had already ended leaves the file
+    # told its rate is being wasted on silence it is in fact using. So the
+    # edge moves up past anything that is unmistakably still content.
+    #
+    # Unmistakably, and it takes both halves to say it. A band has to TOWER
+    # over the level the reading was taken at - BW_FLOOR_DB, the same margin
+    # that makes a floor a floor, read upwards - because a transfer's noise
+    # can decline smoothly from under the music all the way to Nyquist
+    # without ever being 50 dB down, and reading that as "the music reaches
+    # 90 kHz" costs four 192 kHz files here their perfectly good advice. And
+    # it has to be within BW_QUIET_DB of the music, on audible scale, because
+    # 20 dB above a floor 120 dB down is still 100 dB down: a rounding error,
+    # not a cymbal. A partial clears both by tens of dB; nothing else clears
+    # either.
+    #
+    # Shaping caps the search instead of extending it: everything above ITS
+    # turn was identified as noise, and a shaped hump can be louder than the
+    # music - it is the one thing up there that is loud and still not music.
+    ceiling = hits["shaping"][0] if "shaping" in hits else up[-1]
+    loud = max((f for f in up if f <= ceiling
+                and result.bands[f] > level + BW_FLOOR_DB
+                and result.bands[f] > reference - BW_QUIET_DB), default=0)
+    result.content_hz = max(result.content_hz, loud)
+
     result.ultra_level_db = level - reference
     result.ultra_peak_hz = peak
     ladder = BW_LADDER.get(rate_family(rate), BW_LADDER[8000])
